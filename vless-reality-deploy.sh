@@ -111,6 +111,10 @@ ask_port() { # ask_port <变量名> <提示语> [排除端口] : 交互式获取
   echo "  端口: $cur"
 }
 
+rand_hex() { # rand_hex <字节数> : 输出随机十六进制, 不依赖 openssl
+  tr -dc 'a-f0-9' < /dev/urandom 2>/dev/null | head -c $(($1 * 2))
+}
+
 ask_uuid() { # ask_uuid <var> <提示>
   local var="$1" tip="$2" _u cur
   eval "cur=\${$var:-}"
@@ -199,8 +203,8 @@ if [ "$SOCKS" = "y" ]; then
     fi
     break
   done
-  [ -z "$SOCKS_USER" ] && SOCKS_USER="s$(openssl rand -hex 4)"
-  [ -z "$SOCKS_PASS" ] && SOCKS_PASS="$(openssl rand -hex 8)"
+  [ -z "$SOCKS_USER" ] && SOCKS_USER="s$(rand_hex 4)"
+  [ -z "$SOCKS_PASS" ] && SOCKS_PASS="$(rand_hex 8)"
   echo "  SOCKS5 端口: ${SOCKS_PORT}, 用户名: ${SOCKS_USER}"
 else
   SOCKS="n"
