@@ -368,6 +368,16 @@ if [ "$SOCKS" = "y" ]; then
     }"
   echo "    SOCKS5 入站已配置 (端口 ${SOCKS_PORT})"
 fi
+# ---- WARP 检测通道 (仅本机 127.0.0.1:10809, 用于连通性测试) ----
+WARP_CHECK_JSON=""
+if [ "$WARP" = "y" ]; then
+  WARP_CHECK_JSON=",{
+      \"type\": \"socks\",
+      \"tag\": \"warp-check\",
+      \"listen\": \"127.0.0.1\",
+      \"listen_port\": 10809
+    }"
+fi
 ROUTE_JSON=""
 ROUTE_RULES=""
 if [ "$WARP" = "y" ]; then
@@ -420,7 +430,7 @@ if [ "$WARP" = "y" ]; then
 fi
 
 if [ "$WARP_OK" = "y" ]; then
-  ROUTE_RULES='"rules": [ { "inbound": ["vless-warp"], "outbound": "warp" } ], '
+  ROUTE_RULES='"rules": [ { "inbound": ["vless-warp", "warp-check"], "outbound": "warp" } ], '
 else
   ROUTE_RULES=""
 fi
@@ -531,7 +541,7 @@ cat > /etc/sing-box/config.json <<EOF
           "short_id": ["${SHORTID}"]
         }
       }
-    }${INBOUND2_JSON}${SOCKS_INBOUND_JSON}
+    }${INBOUND2_JSON}${SOCKS_INBOUND_JSON}${WARP_CHECK_JSON}
   ],
   "outbounds": [ { "type": "direct", "tag": "direct" } ],
   "endpoints": [${WARP_ENDPOINT_JSON}],
@@ -589,6 +599,22 @@ EOF
   systemctl restart sing-box
   sleep 2
   systemctl is-active --quiet sing-box && echo "    sing-box 运行中" || { echo "服务启动失败, 查看: journalctl -u sing-box -e"; exit 1; }
+fi
+
+# ---- WARP 连通性测试 (只在部署了 WARP 时) ----
+if [ "$WARP_OK" = "y" ]; then
+  echo "==> 测试 WARP 连通性..."
+  sleep 6  # 等 WireGuard 握手
+  _warp_trace=$(curl -fsSL --max-time 15 -x "socks5h://127.0.0.1:10809" https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null || true)
+  if echo "$_warp_trace" | grep -q "warp=on"; then
+    _warp_ip=$(echo "$_warp_trace" | grep "^ip=" | cut -d= -f2)
+    echo "    WARP 连通正常 ✓ (出口 IP: ${_warp_ip})"
+  else
+    echo "    ⚠ 警告: WARP 已配置但连通性测试失败"
+    echo "    可能原因: Cloudflare 侧问题 / 网络限制 / WireGuard 握手异常"
+    echo "    直连节点不受影响，可正常使用；WARP 节点暂时不可用"
+    echo "    可稍后重启服务重试: systemctl restart sing-box (或 rc-service sing-box restart)"
+  fi
 fi
 
 echo "==> 安装管理命令 ws..."
