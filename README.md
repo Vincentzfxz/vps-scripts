@@ -36,16 +36,8 @@ curl -fsSL https://raw.githubusercontent.com/Vincentzfxz/vps-scripts/main/instal
 | 4 | 重启服务 |
 | 5 | 查看实时日志 |
 | 6 | 完全卸载 |
-| 7 | 刷 WARP 精品 IP（解锁 Netflix 非自制剧） |
 
-### 🎬 刷 WARP 精品 IP
 
-```bash
-ws   # 选 7
-```
-
-每次重连 WARP 会获得新的出口 IP，连接 WARP 节点后打开 Netflix 测试，
-找到能解锁非自制剧的 IP 输入 `y` 锁定。需要 `python3`（Debian/Ubuntu 自带）。
 
 ## 🔧 高级用法
 
