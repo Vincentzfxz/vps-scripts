@@ -10,6 +10,7 @@ VPS 一键部署 **VLESS-Reality** 代理节点，Debian / Ubuntu / Alpine 全�
 - **双节点模式**：直连节点 + WARP 出站节点，WARP 账号自动注册，解锁 AI 与流媒体
 - **SOCKS5 代理**：带账号密码，专为指纹浏览器、住宅 IP 场景设计
 - **ws 管理命令**：查看节点、更新内核、更改端口、实时日志、一键卸载
+- **刷 WARP 解锁 IP**：`ws` 菜单一键重连 WARP 刷出口 IP，找到解锁 Netflix 非自制剧的 IP 后锁定
 - **小内存优化**：64MB 小鸡自动创建 swap，超低配 NAT 机也能流畅安装
 - **端口占用预检**：部署前自动检测端口占用，拒绝玄学启动失败
 - **NAT 兼容**：NAT 小鸡照常用，端口填商家分配的即可，无需额外配置
@@ -36,6 +37,16 @@ curl -fsSL https://raw.githubusercontent.com/Vincentzfxz/vps-scripts/main/instal
 | 4 | 重启服务 |
 | 5 | 查看实时日志 |
 | 6 | 完全卸载 |
+| 7 | 刷 WARP 出口 IP（解锁 Netflix 非自制剧） |
+
+### 🎬 刷 WARP 解锁 IP
+
+```bash
+ws   # 选 7
+```
+
+每次重连 WARP 会获得新的出口 IP，连接 WARP 节点后打开 Netflix 测试，
+找到能解锁非自制剧的 IP 输入 `y` 锁定。需要 `python3`（Debian/Ubuntu 自带）。
 
 ## 🔧 高级用法
 
