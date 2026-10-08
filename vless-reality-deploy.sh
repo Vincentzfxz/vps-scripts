@@ -206,11 +206,55 @@ else
   SOCKS="n"
 fi
 
+# ---- 低内存优化: 64/128MB 小鸡自动创建 swap, 避免安装时被 OOM killer 干掉 ----
+ensure_swap() {
+  local mem_kb swap_kb avail_kb
+  mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+  swap_kb=$(awk '/^SwapTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+  # 内存 >= 512MB 或已有 swap, 不需要
+  if [ "${mem_kb:-0}" -ge 524288 ] || [ "${swap_kb:-0}" -gt 0 ]; then
+    return 0
+  fi
+  echo "==> 检测到小内存机器 (约 $((mem_kb / 1024))MB), 准备 swap..."
+  # 已有 swapfile 且已启用就直接用
+  if [ -f /swapfile ] && swapon --show 2>/dev/null | grep -q "/swapfile"; then
+    echo "    swapfile 已存在并启用"
+    return 0
+  fi
+  # 磁盘空间检查 (至少 600MB 可用)
+  avail_kb=$(df -k / 2>/dev/null | awk 'END {print $4}')
+  if [ "${avail_kb:-0}" -lt 614400 ]; then
+    echo "    警告: 磁盘空间不足, 无法创建 swap, 安装可能因内存不足失败"
+    return 0
+  fi
+  rm -f /swapfile
+  if dd if=/dev/zero of=/swapfile bs=1M count=512 2>/dev/null \
+     && chmod 600 /swapfile && mkswap /swapfile >/dev/null 2>&1; then
+    if swapon /swapfile 2>/dev/null; then
+      echo "    swap 已启用 (512MB)"
+      grep -q "^/swapfile" /etc/fstab 2>/dev/null || echo "/swapfile none swap sw 0 0" >> /etc/fstab
+    else
+      # 容器环境 (OpenVZ/LXC) 常不支持 swapon, 不报错继续
+      echo "    提示: swap 启用失败 (容器可能不支持), 将尝试直接安装"
+      rm -f /swapfile
+    fi
+  else
+    echo "    警告: swap 文件创建失败, 将尝试直接安装"
+    rm -f /swapfile
+  fi
+  # 释放 page cache, 给安装腾内存
+  sync 2>/dev/null
+  echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
+  return 0
+}
+ensure_swap
+
 echo "==> 安装依赖... (系统: ${OS})"
 if [ "$OS" = "alpine" ]; then
   apk add --no-cache curl tar openssl ca-certificates bash iproute2 grep > /dev/null
 else
   apt-get update -qq && apt-get install -y -qq curl tar openssl ca-certificates > /dev/null
+  apt-get clean > /dev/null 2>&1  # 清理缓存, 给小内存腾地方
 fi
 
 echo "==> 获取 sing-box 最新版本..."
@@ -223,12 +267,19 @@ else
 fi
 
 echo "==> 下载 sing-box..."
-cd /tmp
-curl -fsSL -o sing-box.tar.gz "https://github.com/SagerNet/sing-box/releases/download/${SB_VER}/sing-box-${SB_VER#v}-linux-${ARCH}.tar.gz"
-tar xzf sing-box.tar.gz
-install -m 755 "sing-box-${SB_VER#v}-linux-${ARCH}/sing-box" /usr/local/bin/sing-box
-rm -rf sing-box.tar.gz "sing-box-${SB_VER#v}-linux-${ARCH}"
-sing-box version | head -1
+# 幂等: 已有可用版本就跳过下载 (小内存机器重跑时省资源)
+if [ -x /usr/local/bin/sing-box ] && /usr/local/bin/sing-box version >/dev/null 2>&1; then
+  echo "    已安装 $(/usr/local/bin/sing-box version | head -1), 跳过下载"
+else
+  cd /tmp
+  # 下载前再释放一次内存
+  sync 2>/dev/null; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
+  curl -fsSL -o sing-box.tar.gz "https://github.com/SagerNet/sing-box/releases/download/${SB_VER}/sing-box-${SB_VER#v}-linux-${ARCH}.tar.gz"
+  tar xzf sing-box.tar.gz
+  install -m 755 "sing-box-${SB_VER#v}-linux-${ARCH}/sing-box" /usr/local/bin/sing-box
+  rm -rf sing-box.tar.gz "sing-box-${SB_VER#v}-linux-${ARCH}"
+  sing-box version | head -1
+fi
 
 echo "==> 生成密钥与 UUID..."
 KEYPAIR="$(sing-box generate reality-keypair)"
@@ -487,6 +538,16 @@ EOF
   systemctl is-active --quiet sing-box && echo "    sing-box 运行中" || { echo "服务启动失败, 查看: journalctl -u sing-box -e"; exit 1; }
 fi
 
+echo "==> 安装管理命令 ws..."
+if curl -fsSL -m 30 -o /usr/local/bin/ws \
+    "https://raw.githubusercontent.com/Vincentzfxz/vps-scripts/main/ws" 2>/dev/null \
+    && chmod +x /usr/local/bin/ws; then
+  echo "    管理命令已安装: 以后输入 ws 即可管理节点 (查看/更新/改端口/卸载)"
+else
+  echo "    提示: ws 下载失败, 可稍后手动安装:"
+  echo "    curl -fsSL https://raw.githubusercontent.com/Vincentzfxz/vps-scripts/main/ws -o /usr/local/bin/ws && chmod +x /usr/local/bin/ws"
+fi
+
 echo "==> 放行防火墙..."
 _fw_ports="$PORT"
 [ "$WARP_OK" = "y" ] && [ -n "${PORT2:-}" ] && _fw_ports="$_fw_ports $PORT2"
@@ -557,6 +618,8 @@ if [ "$SOCKS" = "y" ]; then
 fi
 echo ""
 echo "客户端导入: v2rayNG(Android) / Streisand(iOS) / Shadowrocket(iOS) / v2rayN(Windows) / OpenClash"
+echo "---------------------------------------------------"
+echo "管理命令: 输入 ws 可查看节点、更新 sing-box、更改端口、卸载"
 echo "---------------------------------------------------"
 echo "注意:"
 _sg_note="${PORT}/tcp"
