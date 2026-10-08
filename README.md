@@ -12,7 +12,7 @@ VPS 一键部署 **VLESS-Reality** 代理节点，Debian / Ubuntu / Alpine 全�
 - **ws 管理命令**：查看节点、更新内核、更改端口、实时日志、一键卸载
 - **小内存优化**：64MB 小鸡自动创建 swap，超低配 NAT 机也能流畅安装
 - **端口占用预检**：部署前自动检测端口占用，拒绝玄学启动失败
-- **NAT 支持**：支持端口映射，可自定义链接中的公网地址
+- **NAT 兼容**：NAT 小鸡照常用，端口填商家分配的即可，无需额外配置
 - **架构自适应**：x86_64 / ARM64 自动识别
 - **DNS 保护**：自动沿用商家系统 DNS，不破坏智能 DNS 解锁
 
@@ -48,12 +48,9 @@ export SOCKS=y SOCKS_PORT=20808
 curl -fsSL https://raw.githubusercontent.com/Vincentzfxz/vps-scripts/main/install.sh | sh
 ```
 
-NAT 机器（端口映射）：
+NAT 机器：
 
-```bash
-export PUBLIC_IP=公网IP PUBLIC_PORT=映射端口
-curl -fsSL https://raw.githubusercontent.com/Vincentzfxz/vps-scripts/main/install.sh | sh
-```
+无需特殊配置。脚本询问端口时直接输入商家分配的端口，然后在商家面板做相同端口的映射即可，公网 IP 自动识别。
 
 ## 📁 文件说明
 
