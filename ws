@@ -218,8 +218,17 @@ brush_warp_ip() {
     return
   fi
   if ! command -v python3 >/dev/null 2>&1; then
-    echo "  需要 python3 来解析配置，请先安装: apt install python3 / apk add python3"
-    return
+    echo "  正在自动安装 python3..."
+    if [ "$OS" = "alpine" ]; then
+      apk add --no-cache python3 >/dev/null 2>&1
+    else
+      apt update -qq >/dev/null 2>&1 && apt install -y -qq python3 >/dev/null 2>&1
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+      echo "  python3 安装失败，请手动安装后重试"
+      return
+    fi
+    echo "  python3 安装成功"
   fi
 
   echo "================ 刷 WARP 出口 IP ================"
