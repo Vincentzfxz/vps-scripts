@@ -52,6 +52,45 @@ valid_port() { # valid_port <port> <exclude>
   return 0
 }
 
+have_tty() { [ -t 0 ] || { true </dev/tty; } 2>/dev/null; }
+
+port_in_use() { # port_in_use <port> : 返回0表示被占用
+  local p="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -tln 2>/dev/null | grep -qE ":${p}[[:space:]]"
+  elif command -v netstat >/dev/null 2>&1; then
+    netstat -tln 2>/dev/null | grep -qE ":${p}[[:space:]]"
+  else
+    return 1
+  fi
+}
+
+ask_port() { # ask_port <变量名> <提示语> [排除端口] : 交互式获取可用端口, 含占用预检
+  local var="$1" tip="$2" excl="${3:-}" _p cur holder
+  eval "cur=\${$var:-}"
+  while :; do
+    _p=""
+    tty_read "${tip} [${cur}]: " _p
+    [ -n "$_p" ] && cur="$_p"
+    if ! valid_port "$cur" "$excl"; then
+      echo "  端口不合法, 请重新输入"
+      cur=""
+      have_tty || { echo "FATAL: 端口无效且无交互终端, 请用 ${var}=<空闲端口> 重跑"; exit 1; }
+      continue
+    fi
+    if port_in_use "$cur"; then
+      holder="$(ss -tlnp 2>/dev/null | grep -E ":${cur}[[:space:]]" | head -1 | grep -oP 'users:\(\("\K[^"]+' | head -1)"
+      echo "  端口 ${cur} 已被占用${holder:+ (占用者: $holder)}, 请换一个"
+      cur=""
+      have_tty || { echo "FATAL: 端口被占用且无交互终端, 请换个端口重跑"; exit 1; }
+      continue
+    fi
+    break
+  done
+  eval "$var=\"$cur\""
+  echo "  端口: $cur"
+}
+
 ask_uuid() { # ask_uuid <var> <提示>
   local var="$1" tip="$2" _u cur
   eval "cur=\${$var:-}"
@@ -76,12 +115,8 @@ _n=""
 tty_read "  节点名称 [${NAME}]: " _n
 [ -n "$_n" ] && NAME="$_n"
 echo "  节点名称: ${NAME}"
-# ---- 端口 ----
-_p=""
-tty_read "  监听端口 [${PORT}]: " _p
-[ -n "$_p" ] && PORT="$_p"
-valid_port "$PORT" || { echo "  端口不合法, 使用默认 443"; PORT=443; }
-echo "  端口: ${PORT}"
+# ---- 端口 (含占用预检) ----
+ask_port PORT "  监听端口"
 # ---- 伪装域名: 为空则自动测速选最快且支持 TLS1.3 的 ----
 if [ -z "${DEST:-}" ]; then
   echo "==> 自动检测伪装目标站 (测速 + TLS1.3 检查)..."
@@ -114,12 +149,7 @@ if [ -z "$WARP" ]; then
 fi
 if [ "$WARP" = "y" ]; then
   PORT2="${PORT2:-8444}"
-  _p2=""
-  tty_read "  WARP 节点监听端口 [${PORT2}] (不能与 ${PORT} 相同): " _p2
-  [ -n "$_p2" ] && PORT2="$_p2"
-  valid_port "$PORT2" "$PORT" || { echo "  端口不合法或与主节点冲突, 使用默认 8444"; PORT2=8444; }
-  valid_port "$PORT2" "$PORT" || { PORT2=$((PORT + 1)); echo "  仍冲突, 自动使用 ${PORT2}"; }
-  echo "  WARP 节点端口: ${PORT2}"
+  ask_port PORT2 "  WARP 节点监听端口 (不能与 ${PORT} 相同)" "$PORT"
   NAME2="${NAME2:-${NAME}-WARP}"
   _n2=""
   tty_read "  WARP 节点名称 [${NAME2}]: " _n2
