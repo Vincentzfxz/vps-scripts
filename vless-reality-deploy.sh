@@ -2,7 +2,7 @@
 # ============================================================
 # 一键部署 VLESS + Reality 代理节点 (sing-box)
 # 适用: 任意 KVM/NAT VPS, Debian / Ubuntu / Alpine 系统, root 用户运行
-# 支持: 单节点直连, 或双节点 (直连 + WARP 出站)
+# 支持: VLESS-Reality 直连节点, 可选再加 WARP 出站节点 / SOCKS5 代理
 # 用法:
 #   bash <(curl -fsSL <脚本链接>)           (推荐, stdin 保持为终端)
 #   curl -fsSL <脚本链接> | bash            (管道方式, 照样可交互输入)
@@ -10,6 +10,7 @@
 # 环境变量预设 (可跳过交互输入):
 #   NAME="我的节点" PORT=8443 UUID=... DEST=addons.mozilla.org \
 #   WARP=y PORT2=8444 NAME2="我的节点-WARP" UUID2=... \
+#   SOCKS=y SOCKS_PORT=20808 SOCKS_USER=xxx SOCKS_PASS=yyy \
 #   DNS_PRIMARY=1.1.1.1 \
 #   PUBLIC_IP=1.2.3.4 PUBLIC_PORT=20000 PUBLIC_PORT2=20001 \  # NAT 机器: 链接用面板映射的公网地址
 #   bash vless-reality-deploy.sh
@@ -22,6 +23,10 @@ PORT="${PORT:-443}"
 NAME="${NAME:-VPS-Reality}"
 DEST="${DEST:-}"          # 为空则自动测速选择
 WARP="${WARP:-}"          # y = 再建一个 WARP 出站节点
+SOCKS="${SOCKS:-}"        # y = 再建一个 SOCKS5 代理 (带账号密码, 供指纹浏览器等使用)
+SOCKS_PORT="${SOCKS_PORT:-}"
+SOCKS_USER="${SOCKS_USER:-}"
+SOCKS_PASS="${SOCKS_PASS:-}"
 DNS_PRIMARY="${DNS_PRIMARY:-}"  # 为空则自动检测系统 DNS(保留商家智能 DNS 解锁)
 # NAT 机器可选: 手动指定链接中的公网地址 (面板映射的 IP:端口)
 PUBLIC_IP="${PUBLIC_IP:-}"
@@ -175,6 +180,32 @@ else
   WARP="n"
 fi
 
+# ---- 是否加建 SOCKS5 代理 ----
+if [ -z "$SOCKS" ]; then
+  _s=""
+  tty_read "  是否再建一个 SOCKS5 代理 (指纹浏览器用, 带账号密码)? [y/N]: " _s
+  case "$_s" in [Yy]*) SOCKS="y";; *) SOCKS="n";; esac
+fi
+if [ "$SOCKS" = "y" ]; then
+  if [ -z "$SOCKS_PORT" ]; then
+    SOCKS_PORT=$((RANDOM % 40000 + 20000))  # 默认随机高位端口, 减少被扫描
+  fi
+  while :; do
+    ask_port SOCKS_PORT "  SOCKS5 监听端口" "$PORT"
+    if [ "$WARP" = "y" ] && [ -n "${PORT2:-}" ] && [ "$SOCKS_PORT" = "$PORT2" ]; then
+      echo "  不能与 WARP 节点端口 ${PORT2} 相同, 请重新输入"
+      SOCKS_PORT=""
+      continue
+    fi
+    break
+  done
+  [ -z "$SOCKS_USER" ] && SOCKS_USER="s$(openssl rand -hex 4)"
+  [ -z "$SOCKS_PASS" ] && SOCKS_PASS="$(openssl rand -hex 8)"
+  echo "  SOCKS5 端口: ${SOCKS_PORT}, 用户名: ${SOCKS_USER}"
+else
+  SOCKS="n"
+fi
+
 echo "==> 安装依赖... (系统: ${OS})"
 if [ "$OS" = "alpine" ]; then
   apk add --no-cache curl tar openssl ca-certificates bash iproute2 grep > /dev/null
@@ -218,6 +249,20 @@ SHORTID="$(openssl rand -hex 8)"
 WARP_OK="n"
 WARP_ENDPOINT_JSON=""
 INBOUND2_JSON=""
+SOCKS_INBOUND_JSON=""
+# ---- SOCKS5 入站配置 ----
+if [ "$SOCKS" = "y" ]; then
+  SOCKS_INBOUND_JSON=",{
+      \"type\": \"socks\",
+      \"tag\": \"socks-in\",
+      \"listen\": \"::\",
+      \"listen_port\": ${SOCKS_PORT},
+      \"users\": [
+        { \"username\": \"${SOCKS_USER}\", \"password\": \"${SOCKS_PASS}\" }
+      ]
+    }"
+  echo "    SOCKS5 入站已配置 (端口 ${SOCKS_PORT})"
+fi
 ROUTE_JSON=""
 ROUTE_RULES=""
 if [ "$WARP" = "y" ]; then
@@ -382,7 +427,7 @@ cat > /etc/sing-box/config.json <<EOF
           "short_id": ["${SHORTID}"]
         }
       }
-    }${INBOUND2_JSON}
+    }${INBOUND2_JSON}${SOCKS_INBOUND_JSON}
   ],
   "outbounds": [ { "type": "direct", "tag": "direct" } ],
   "endpoints": [${WARP_ENDPOINT_JSON}],
@@ -443,8 +488,10 @@ EOF
 fi
 
 echo "==> 放行防火墙..."
-for _pt in "$PORT" ${PORT2:+$PORT2}; do
-  [ "$WARP_OK" = "y" ] || [ "$_pt" = "$PORT" ] || continue
+_fw_ports="$PORT"
+[ "$WARP_OK" = "y" ] && [ -n "${PORT2:-}" ] && _fw_ports="$_fw_ports $PORT2"
+[ "$SOCKS" = "y" ] && [ -n "${SOCKS_PORT:-}" ] && _fw_ports="$_fw_ports $SOCKS_PORT"
+for _pt in $_fw_ports; do
   if command -v ufw > /dev/null && ufw status | grep -q "Status: active"; then
     ufw allow "${_pt}/tcp" > /dev/null && echo "    ufw 已放行 ${_pt}/tcp"
   fi
@@ -475,6 +522,16 @@ LINK1="vless://${UUID}@${SERVER_IP}:${LINK_PORT}?encryption=none&flow=xtls-rprx-
     echo "vless://${UUID2}@${SERVER_IP}:${LINK_PORT2}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${DEST}&fp=chrome&pbk=${PUBKEY}&sid=${SHORTID}#${NAME2_ENC}"
   fi
 } > /root/vless-link.txt
+# SOCKS 信息另存一份 (方便复制到指纹浏览器)
+if [ "$SOCKS" = "y" ]; then
+  {
+    echo "[SOCKS5]"
+    echo "地址: ${SERVER_IP}"
+    echo "端口: ${SOCKS_PORT}"
+    echo "用户名: ${SOCKS_USER}"
+    echo "密码: ${SOCKS_PASS}"
+  } > /root/socks-info.txt
+fi
 
 echo ""
 echo "==================== 部署完成 ===================="
@@ -489,11 +546,23 @@ if [ "$WARP_OK" = "y" ]; then
   echo ""
   echo "验证 WARP 是否生效: 连上 WARP 节点后访问 https://www.cloudflare.com/cdn-cgi/trace, 看到 warp=on 即成功"
 fi
+if [ "$SOCKS" = "y" ]; then
+  echo ""
+  echo "[SOCKS5代理] (指纹浏览器用)"
+  echo "地址: ${SERVER_IP}"
+  echo "端口: ${SOCKS_PORT}"
+  echo "用户名: ${SOCKS_USER}"
+  echo "密码: ${SOCKS_PASS}"
+  echo "指纹浏览器填: SOCKS5://${SOCKS_USER}:${SOCKS_PASS}@${SERVER_IP}:${SOCKS_PORT}"
+fi
 echo ""
 echo "客户端导入: v2rayNG(Android) / Streisand(iOS) / Shadowrocket(iOS) / v2rayN(Windows) / OpenClash"
 echo "---------------------------------------------------"
 echo "注意:"
-echo "1. 如果商家有云防火墙/安全组 (如 Azure NSG), 需在控制台再放行 ${PORT}/tcp${WARP_OK:+、${PORT2}/tcp}"
+_sg_note="${PORT}/tcp"
+[ "$WARP_OK" = "y" ] && _sg_note="${_sg_note}、${PORT2}/tcp"
+[ "$SOCKS" = "y" ] && _sg_note="${_sg_note}、${SOCKS_PORT}/tcp"
+echo "1. 如果商家有云防火墙/安全组 (如 Azure NSG), 需在控制台再放行 ${_sg_note}"
 echo "2. 更换配置后: systemctl restart sing-box"
 echo "3. 查看日志: journalctl -u sing-box -f"
 echo "==================================================="
