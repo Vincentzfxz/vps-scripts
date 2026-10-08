@@ -12,7 +12,7 @@
 #   WARP=y PORT2=8444 NAME2="我的节点-WARP" UUID2=... \
 #   SOCKS=y SOCKS_PORT=20808 SOCKS_USER=xxx SOCKS_PASS=yyy \
 #   DNS_PRIMARY=1.1.1.1 \
-#   PUBLIC_IP=1.2.3.4 PUBLIC_PORT=20000 PUBLIC_PORT2=20001 \  # NAT 机器: 链接用面板映射的公网地址
+#   PUBLIC_IP=1.2.3.4 PUBLIC_PORT=20000 PUBLIC_PORT2=20001 PUBLIC_PORT3=20002 \  # NAT: 链接用面板映射的公网地址/端口
 #   bash vless-reality-deploy.sh
 # 跑完输出 vless:// 链接, 导入 v2rayNG / Streisand / Shadowrocket / OpenClash 即可用
 # 无需域名、无需证书、不走 CDN; flow=xtls-rprx-vision 服务端/客户端已配好
@@ -31,6 +31,7 @@ DNS_PRIMARY="${DNS_PRIMARY:-}"  # 为空则自动检测系统 DNS(保留商家�
 # NAT 机器可选: 手动指定链接中的公网地址 (面板映射的 IP:端口)
 PUBLIC_IP="${PUBLIC_IP:-}"
 PUBLIC_PORT="${PUBLIC_PORT:-}"
+PUBLIC_PORT3="${PUBLIC_PORT3:-}"  # NAT: SOCKS5 映射的外网端口
 SB_VER=""
 case "$(uname -m)" in
   x86_64) ARCH="amd64" ;;
@@ -640,7 +641,7 @@ if [ "$SOCKS" = "y" ]; then
   {
     echo "[SOCKS5]"
     echo "地址: ${SERVER_IP}"
-    echo "端口: ${SOCKS_PORT}"
+    echo "端口: ${PUBLIC_PORT3:-$SOCKS_PORT}"
     echo "用户名: ${SOCKS_USER}"
     echo "密码: ${SOCKS_PASS}"
   } > /root/socks-info.txt
@@ -663,10 +664,10 @@ if [ "$SOCKS" = "y" ]; then
   echo ""
   echo "[SOCKS5代理] (指纹浏览器用)"
   echo "地址: ${SERVER_IP}"
-  echo "端口: ${SOCKS_PORT}"
+  echo "端口: ${PUBLIC_PORT3:-$SOCKS_PORT}"
   echo "用户名: ${SOCKS_USER}"
   echo "密码: ${SOCKS_PASS}"
-  echo "指纹浏览器填: SOCKS5://${SOCKS_USER}:${SOCKS_PASS}@${SERVER_IP}:${SOCKS_PORT}"
+  echo "指纹浏览器填: SOCKS5://${SOCKS_USER}:${SOCKS_PASS}@${SERVER_IP}:${PUBLIC_PORT3:-$SOCKS_PORT}"
 fi
 echo ""
 echo "客户端导入: v2rayNG(Android) / Streisand(iOS) / Shadowrocket(iOS) / v2rayN(Windows) / OpenClash"
