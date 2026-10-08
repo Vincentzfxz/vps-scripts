@@ -1,14 +1,17 @@
 #!/bin/bash
 # ============================================================
 # 一键部署 VLESS + Reality 代理节点 (sing-box)
-# 适用: 任意 KVM VPS, Debian / Ubuntu 系统, root 用户运行
+# 适用: 任意 KVM/NAT VPS, Debian / Ubuntu / Alpine 系统, root 用户运行
 # 支持: 单节点直连, 或双节点 (直连 + WARP 出站)
 # 用法:
 #   bash <(curl -fsSL <脚本链接>)           (推荐, stdin 保持为终端)
 #   curl -fsSL <脚本链接> | bash            (管道方式, 照样可交互输入)
+#   Alpine 需先装 bash: apk add --no-cache bash curl
 # 环境变量预设 (可跳过交互输入):
 #   NAME="我的节点" PORT=8443 UUID=... DEST=addons.mozilla.org \
 #   WARP=y PORT2=8444 NAME2="我的节点-WARP" UUID2=... \
+#   DNS_PRIMARY=1.1.1.1 \
+#   PUBLIC_IP=1.2.3.4 PUBLIC_PORT=20000 PUBLIC_PORT2=20001 \  # NAT 机器: 链接用面板映射的公网地址
 #   bash vless-reality-deploy.sh
 # 跑完输出 vless:// 链接, 导入 v2rayNG / Streisand / Shadowrocket / OpenClash 即可用
 # 无需域名、无需证书、不走 CDN; flow=xtls-rprx-vision 服务端/客户端已配好
@@ -20,12 +23,24 @@ NAME="${NAME:-VPS-Reality}"
 DEST="${DEST:-}"          # 为空则自动测速选择
 WARP="${WARP:-}"          # y = 再建一个 WARP 出站节点
 DNS_PRIMARY="${DNS_PRIMARY:-}"  # 为空则自动检测系统 DNS(保留商家智能 DNS 解锁)
+# NAT 机器可选: 手动指定链接中的公网地址 (面板映射的 IP:端口)
+PUBLIC_IP="${PUBLIC_IP:-}"
+PUBLIC_PORT="${PUBLIC_PORT:-}"
 SB_VER=""
 case "$(uname -m)" in
   x86_64) ARCH="amd64" ;;
   aarch64|arm64) ARCH="arm64" ;;
   *) echo "不支持的 CPU 架构: $(uname -m)"; exit 1 ;;
 esac
+
+# ---- 系统检测: debian/ubuntu 用 apt+systemd, alpine 用 apk+openrc ----
+if [ -f /etc/alpine-release ]; then
+  OS="alpine"
+elif [ -f /etc/debian_version ] || [ -f /etc/os-release ] && grep -qiE "debian|ubuntu" /etc/os-release; then
+  OS="debian"
+else
+  echo "不支持的系统 (仅支持 Debian/Ubuntu/Alpine)"; exit 1
+fi
 
 urlencode() {
   if command -v python3 >/dev/null 2>&1; then
@@ -160,8 +175,12 @@ else
   WARP="n"
 fi
 
-echo "==> 安装依赖..."
-apt-get update -qq && apt-get install -y -qq curl tar openssl ca-certificates > /dev/null
+echo "==> 安装依赖... (系统: ${OS})"
+if [ "$OS" = "alpine" ]; then
+  apk add --no-cache curl tar openssl ca-certificates bash iproute2 grep > /dev/null
+else
+  apt-get update -qq && apt-get install -y -qq curl tar openssl ca-certificates > /dev/null
+fi
 
 echo "==> 获取 sing-box 最新版本..."
 SB_VER="$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep -oP '"tag_name":\s*"\Kv[0-9.]+' | head -1 || true)"
@@ -305,8 +324,8 @@ detect_dns() {
   ns=$(grep -m1 '^[[:space:]]*nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}')
   case "$ns" in
     127.0.0.53|127.0.0.1|::1|"")
-      # 本地 stub: 尝试启动 systemd-resolved 使其生效
-      if systemctl enable --now systemd-resolved >/dev/null 2>&1; then
+      # 本地 stub: 尝试启动 systemd-resolved 使其生效 (仅 debian 系)
+      if [ "$OS" != "alpine" ] && systemctl enable --now systemd-resolved >/dev/null 2>&1; then
         sleep 2
         echo "127.0.0.53"
         return 0
@@ -377,7 +396,29 @@ fi
 echo "    配置校验通过"
 
 echo "==> 注册系统服务..."
-cat > /etc/systemd/system/sing-box.service <<EOF
+if [ "$OS" = "alpine" ]; then
+  cat > /etc/init.d/sing-box <<'EOF'
+#!/sbin/openrc-run
+name="sing-box"
+description="sing-box proxy service"
+command="/usr/local/bin/sing-box"
+command_args="run -c /etc/sing-box/config.json"
+command_background=true
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/sing-box.log"
+error_log="/var/log/sing-box.log"
+depend() {
+  need net
+  after firewall
+}
+EOF
+  chmod +x /etc/init.d/sing-box
+  rc-update add sing-box default >/dev/null 2>&1
+  rc-service sing-box restart
+  sleep 2
+  rc-service sing-box status >/dev/null 2>&1 && echo "    sing-box 运行中" || { echo "服务启动失败, 查看: tail -30 /var/log/sing-box.log"; exit 1; }
+else
+  cat > /etc/systemd/system/sing-box.service <<EOF
 [Unit]
 Description=sing-box proxy service
 After=network.target
@@ -393,12 +434,13 @@ LimitNOFILE=1048576
 [Install]
 WantedBy=multi-user.target
 EOF
-systemctl daemon-reload
-systemctl enable sing-box
-# 必须用 restart: 服务已在运行时 start 是空操作, 新配置不会被加载
-systemctl restart sing-box
-sleep 2
-systemctl is-active --quiet sing-box && echo "    sing-box 运行中" || { echo "服务启动失败, 查看: journalctl -u sing-box -e"; exit 1; }
+  systemctl daemon-reload
+  systemctl enable sing-box
+  # 必须用 restart: 服务已在运行时 start 是空操作, 新配置不会被加载
+  systemctl restart sing-box
+  sleep 2
+  systemctl is-active --quiet sing-box && echo "    sing-box 运行中" || { echo "服务启动失败, 查看: journalctl -u sing-box -e"; exit 1; }
+fi
 
 echo "==> 放行防火墙..."
 for _pt in "$PORT" ${PORT2:+$PORT2}; do
@@ -413,16 +455,24 @@ for _pt in "$PORT" ${PORT2:+$PORT2}; do
 done
 
 echo "==> 获取本机公网 IP..."
-SERVER_IP="$(curl -fsSL -m 10 ifconfig.me || curl -fsSL -m 10 ip.sb || true)"
-[ -z "$SERVER_IP" ] && SERVER_IP="<你的VPS_IP>"
+if [ -n "$PUBLIC_IP" ]; then
+  SERVER_IP="$PUBLIC_IP"
+  echo "    使用手动指定的公网 IP: ${SERVER_IP} (NAT 模式)"
+else
+  SERVER_IP="$(curl -fsSL -m 10 ifconfig.me || curl -fsSL -m 10 ip.sb || true)"
+  [ -z "$SERVER_IP" ] && SERVER_IP="<你的VPS_IP>"
+fi
+# NAT 机器: 链接中的端口可用 PUBLIC_PORT/PUBLIC_PORT2 覆盖为面板映射的外网端口
+LINK_PORT="${PUBLIC_PORT:-$PORT}"
 
 NAME_ENC="$(urlencode "$NAME")"
-LINK1="vless://${UUID}@${SERVER_IP}:${PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${DEST}&fp=chrome&pbk=${PUBKEY}&sid=${SHORTID}#${NAME_ENC}"
+LINK1="vless://${UUID}@${SERVER_IP}:${LINK_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${DEST}&fp=chrome&pbk=${PUBKEY}&sid=${SHORTID}#${NAME_ENC}"
 {
   echo "$LINK1"
   if [ "$WARP_OK" = "y" ]; then
     NAME2_ENC="$(urlencode "$NAME2")"
-    echo "vless://${UUID2}@${SERVER_IP}:${PORT2}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${DEST}&fp=chrome&pbk=${PUBKEY}&sid=${SHORTID}#${NAME2_ENC}"
+    LINK_PORT2="${PUBLIC_PORT2:-$PORT2}"
+    echo "vless://${UUID2}@${SERVER_IP}:${LINK_PORT2}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${DEST}&fp=chrome&pbk=${PUBKEY}&sid=${SHORTID}#${NAME2_ENC}"
   fi
 } > /root/vless-link.txt
 
@@ -435,7 +485,7 @@ echo "$LINK1"
 if [ "$WARP_OK" = "y" ]; then
   echo ""
   echo "[WARP出站] ${NAME2}"
-  echo "vless://${UUID2}@${SERVER_IP}:${PORT2}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${DEST}&fp=chrome&pbk=${PUBKEY}&sid=${SHORTID}#${NAME2_ENC}"
+  echo "vless://${UUID2}@${SERVER_IP}:${LINK_PORT2}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${DEST}&fp=chrome&pbk=${PUBKEY}&sid=${SHORTID}#${NAME2_ENC}"
   echo ""
   echo "验证 WARP 是否生效: 连上 WARP 节点后访问 https://www.cloudflare.com/cdn-cgi/trace, 看到 warp=on 即成功"
 fi
