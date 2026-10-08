@@ -7,10 +7,10 @@ VPS 一键部署 **VLESS-Reality** 代理节点，Debian / Ubuntu / Alpine 全�
 - **一键部署**：一条命令，交互式配置，全程中文提示
 - **VLESS + Reality**：无需域名、无需证书，抗封锁拉满
 - **智能优选伪装站**：自动测速 5 个候选域名，挑最快且支持 TLS1.3 的，伪装效果最大化
-- **双节点模式**：直连节点 + WARP 出站节点，WARP 账号自动注册，解锁 AI 与流媒体
+- **双节点模式**：直连节点 + WARP 出站节点，WARP 账号自动注册，一键切换 Cloudflare 出口
 - **SOCKS5 代理**：带账号密码，专为指纹浏览器、住宅 IP 场景设计
 - **ws 管理命令**：查看节点、更新内核、更改端口、实时日志、一键卸载
-- **刷 WARP 解锁 IP**：`ws` 菜单一键重连 WARP 刷出口 IP，找到解锁 Netflix 非自制剧的 IP 后锁定
+- **刷 WARP 精品 IP**：WARP 默认 IP 解锁不给力时，`ws` 第 7 项循环刷出解锁 Netflix 非自制剧的干净 IP
 - **小内存优化**：64MB 小鸡自动创建 swap，超低配 NAT 机也能流畅安装
 - **端口占用预检**：部署前自动检测端口占用，拒绝玄学启动失败
 - **NAT 兼容**：NAT 小鸡照常用，端口填商家分配的即可，无需额外配置
@@ -37,9 +37,9 @@ curl -fsSL https://raw.githubusercontent.com/Vincentzfxz/vps-scripts/main/instal
 | 4 | 重启服务 |
 | 5 | 查看实时日志 |
 | 6 | 完全卸载 |
-| 7 | 刷 WARP 出口 IP（解锁 Netflix 非自制剧） |
+| 7 | 刷 WARP 精品 IP（解锁 Netflix 非自制剧） |
 
-### 🎬 刷 WARP 解锁 IP
+### 🎬 刷 WARP 精品 IP
 
 ```bash
 ws   # 选 7
