@@ -274,7 +274,7 @@ ensure_swap
 
 echo "==> 安装依赖... (系统: ${OS})"
 if [ "$OS" = "alpine" ]; then
-  apk add --no-cache curl tar openssl ca-certificates bash iproute2 grep > /dev/null
+  apk add --no-cache curl tar openssl ca-certificates bash iproute2 grep gcompat > /dev/null
 else
   apt-get update -qq && apt-get install -y -qq curl tar openssl ca-certificates > /dev/null
   apt-get clean > /dev/null 2>&1  # 清理缓存, 给小内存腾地方
@@ -312,10 +312,24 @@ else
     echo "FATAL: ${DL_DIR} 可用空间不足 (${_avail}KB), 至少需要 150MB。请清理磁盘后重跑。"
     exit 1
   fi
-  curl -fsSL -o sing-box.tar.gz "https://github.com/SagerNet/sing-box/releases/download/${SB_VER}/sing-box-${SB_VER#v}-linux-${ARCH}.tar.gz"
+  _dl_ok=0
+  for _try in 1 2 3; do
+    if curl -fsSL --retry 2 -o sing-box.tar.gz "https://github.com/SagerNet/sing-box/releases/download/${SB_VER}/sing-box-${SB_VER#v}-linux-${ARCH}.tar.gz" \
+       && [ -s sing-box.tar.gz ] && tar tzf sing-box.tar.gz >/dev/null 2>&1; then
+      _dl_ok=1; break
+    fi
+    echo "    下载失败或文件损坏, 重试 ${_try}/3..."
+    rm -f sing-box.tar.gz
+    sleep 2
+  done
+  [ "$_dl_ok" = "1" ] || { echo "FATAL: sing-box 下载失败, 请检查网络后重跑"; exit 1; }
   tar xzf sing-box.tar.gz
   install -m 755 "sing-box-${SB_VER#v}-linux-${ARCH}/sing-box" /usr/local/bin/sing-box
   rm -rf sing-box.tar.gz "sing-box-${SB_VER#v}-linux-${ARCH}"
+  if ! sing-box version >/dev/null 2>&1; then
+    echo "FATAL: sing-box 安装后无法运行。Alpine 系统请确认已安装 gcompat。"
+    exit 1
+  fi
   sing-box version | head -1
 fi
 
