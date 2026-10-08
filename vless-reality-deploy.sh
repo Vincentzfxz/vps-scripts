@@ -21,7 +21,11 @@ DEST="${DEST:-}"          # 为空则自动测速选择
 WARP="${WARP:-}"          # y = 再建一个 WARP 出站节点
 DNS_PRIMARY="${DNS_PRIMARY:-}"  # 为空则自动检测系统 DNS(保留商家智能 DNS 解锁)
 SB_VER=""
-ARCH="amd64"
+case "$(uname -m)" in
+  x86_64) ARCH="amd64" ;;
+  aarch64|arm64) ARCH="arm64" ;;
+  *) echo "不支持的 CPU 架构: $(uname -m)"; exit 1 ;;
+esac
 
 urlencode() {
   if command -v python3 >/dev/null 2>&1; then
@@ -175,7 +179,7 @@ if [ "$WARP" = "y" ]; then
     WGCF_VER="$(curl -fsSL https://api.github.com/repos/ViRb3/wgcf/releases/latest | grep -oP '"tag_name":\s*"\Kv[0-9.]+' | head -1 || true)"
     if [ -z "$WGCF_VER" ]; then
       echo "    获取 wgcf 版本失败且本地无 wgcf, 跳过 WARP 节点 (主节点不受影响)"
-    elif curl -fsSL -o wgcf "https://github.com/ViRb3/wgcf/releases/download/${WGCF_VER}/wgcf_${WGCF_VER#v}_linux_amd64" && chmod +x wgcf; then
+    elif curl -fsSL -o wgcf "https://github.com/ViRb3/wgcf/releases/download/${WGCF_VER}/wgcf_${WGCF_VER#v}_linux_${ARCH}" && chmod +x wgcf; then
       echo "    wgcf 下载成功 (${WGCF_VER})"
     else
       echo "    wgcf 下载失败, 跳过 WARP 节点 (主节点不受影响)"
