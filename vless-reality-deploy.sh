@@ -206,10 +206,29 @@ else
   SOCKS="n"
 fi
 
+# ---- 有效内存检测 (容器 cgroup 限制可能远小于物理内存, /proc/meminfo 会骗人) ----
+eff_mem_kb() {
+  local mem_kb cg
+  mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+  # cgroup v2
+  cg=$(cat /sys/fs/cgroup/memory.max 2>/dev/null)
+  if [ -n "$cg" ] && [ "$cg" != "max" ]; then
+    cg=$((cg / 1024))
+    [ "$cg" -lt "$mem_kb" ] && mem_kb="$cg"
+  fi
+  # cgroup v1
+  cg=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null)
+  if [ -n "$cg" ] && [ "$cg" -lt 9223372036854771712 ]; then
+    cg=$((cg / 1024))
+    [ "$cg" -lt "$mem_kb" ] && mem_kb="$cg"
+  fi
+  echo "${mem_kb:-0}"
+}
+
 # ---- 低内存优化: 64/128MB 小鸡自动创建 swap, 避免安装时被 OOM killer 干掉 ----
 ensure_swap() {
   local mem_kb swap_kb avail_kb
-  mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+  mem_kb=$(eff_mem_kb)
   swap_kb=$(awk '/^SwapTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
   # 内存 >= 512MB 或已有 swap, 不需要
   if [ "${mem_kb:-0}" -ge 524288 ] || [ "${swap_kb:-0}" -gt 0 ]; then
@@ -271,14 +290,22 @@ echo "==> 下载 sing-box..."
 if [ -x /usr/local/bin/sing-box ] && /usr/local/bin/sing-box version >/dev/null 2>&1; then
   echo "    已安装 $(/usr/local/bin/sing-box version | head -1), 跳过下载"
 else
-  cd /tmp
+  # 选下载目录: /tmp 是内存盘(tmpfs)且有效内存 < 1GB 时, 改用磁盘目录避免 OOM
+  DL_DIR="/tmp"
+  if df -T /tmp 2>/dev/null | grep -q "tmpfs" && [ "$(eff_mem_kb)" -lt 1048576 ]; then
+    for _dd in /root /var/tmp /; do
+      _da=$(df -k "$_dd" 2>/dev/null | awk 'END {print $4}')
+      if [ "${_da:-0}" -gt 200000 ]; then DL_DIR="$_dd"; break; fi
+    done
+    echo "    /tmp 为内存盘且内存较小, 改用 ${DL_DIR} 下载"
+  fi
+  cd "$DL_DIR" || exit 1
   # 下载前再释放一次内存
   sync 2>/dev/null; [ -w /proc/sys/vm/drop_caches ] && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
   # 磁盘空间预检 (tarball 约 30MB, 解压后约 80MB)
-  _avail=$(df -k /tmp 2>/dev/null | awk 'END {print $4}')
+  _avail=$(df -k "$DL_DIR" 2>/dev/null | awk 'END {print $4}')
   if [ "${_avail:-0}" -lt 150000 ]; then
-    echo "FATAL: /tmp 可用空间不足 (${_avail}KB), 至少需要 150MB。请清理磁盘后重跑。"
-    echo "可尝试: rm -rf /tmp/* /var/cache/apk/*"
+    echo "FATAL: ${DL_DIR} 可用空间不足 (${_avail}KB), 至少需要 150MB。请清理磁盘后重跑。"
     exit 1
   fi
   curl -fsSL -o sing-box.tar.gz "https://github.com/SagerNet/sing-box/releases/download/${SB_VER}/sing-box-${SB_VER#v}-linux-${ARCH}.tar.gz"
