@@ -315,16 +315,17 @@ else
   fi
   _dl_ok=0
   for _try in 1 2 3; do
+    # 小内存机器: 不做 tar 完整性预检 (解压时自然会报错), 减少内存占用
     if curl -fsSL --retry 2 -o sing-box.tar.gz "https://github.com/SagerNet/sing-box/releases/download/${SB_VER}/sing-box-${SB_VER#v}-linux-${ARCH}.tar.gz" \
-       && [ -s sing-box.tar.gz ] && tar tzf sing-box.tar.gz >/dev/null 2>&1; then
+       && [ -s sing-box.tar.gz ]; then
       _dl_ok=1; break
     fi
-    echo "    下载失败或文件损坏, 重试 ${_try}/3..."
+    echo "    下载失败, 重试 ${_try}/3..."
     rm -f sing-box.tar.gz
     sleep 2
   done
   [ "$_dl_ok" = "1" ] || { echo "FATAL: sing-box 下载失败, 请检查网络后重跑"; exit 1; }
-  tar xzf sing-box.tar.gz
+  tar xzf sing-box.tar.gz || { echo "FATAL: 解压失败, 安装包可能损坏, 请重跑"; exit 1; }
   install -m 755 "sing-box-${SB_VER#v}-linux-${ARCH}/sing-box" /usr/local/bin/sing-box
   rm -rf sing-box.tar.gz "sing-box-${SB_VER#v}-linux-${ARCH}"
   if ! sing-box version >/dev/null 2>&1; then
