@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================
 # ws - sing-box 节点管理工具
-# 菜单: 查看节点 / 更新 sing-box / 更改端口 / 重启服务 / 日志 / 卸载 / 刷 WARP IP
+# 菜单: 查看节点 / 更新 sing-box / 更改端口 / 重启服务 / 日志 / 卸载
 # 由 vless-reality-deploy.sh 自动安装到 /usr/local/bin/ws
 # ============================================================
 CONFIG="/etc/sing-box/config.json"
@@ -210,107 +210,6 @@ uninstall() {
   exit 0
 }
 
-# ---------- 7. 刷 WARP 出口 IP (解锁 Netflix 非自制剧) ----------
-# 原理: 主服务保持运行, 通过本机 SOCKS 检测通道查出口 IP;
-#       需要换 IP 时重启服务触发 WireGuard 重连 (客户端短暂断开重连即可)
-brush_warp_ip() {
-  if ! grep -q '"tag"[ \t]*:[ \t]*"warp"' "$CONFIG" 2>/dev/null; then
-    echo "  未检测到 WARP 配置。请先部署时选择安装 WARP 节点。"
-    return
-  fi
-  if ! command -v python3 >/dev/null 2>&1; then
-    echo "  正在自动安装 python3..."
-    if [ "$OS" = "alpine" ]; then
-      apk add --no-cache python3 >/dev/null 2>&1
-    else
-      apt update -qq >/dev/null 2>&1 && apt install -y -qq python3 >/dev/null 2>&1
-    fi
-    if ! command -v python3 >/dev/null 2>&1; then
-      echo "  python3 安装失败，请手动安装后重试"
-      return
-    fi
-  fi
-
-  local CHECK_PORT=10809
-
-  # 确保本机检测通道存在 (一次性设置)
-  if ! grep -q '"tag"[ \t]*:[ \t]*"warp-check"' "$CONFIG" 2>/dev/null; then
-    echo "  首次使用，正在添加本机检测通道..."
-    if ! python3 - "$CONFIG" <<'PYEOF2'
-import json, sys
-cfg_path = sys.argv[1]
-with open(cfg_path) as f:
-    cfg = json.load(f)
-# 加 SOCKS 入站 (仅本机)
-cfg.setdefault("inbounds", []).append({
-    "type": "socks",
-    "tag": "warp-check",
-    "listen": "127.0.0.1",
-    "listen_port": 10809
-})
-# 加路由规则
-route = cfg.setdefault("route", {})
-rules = route.setdefault("rules", [])
-if not any("warp-check" in str(r.get("inbound", [])) for r in rules):
-    rules.append({"inbound": ["warp-check"], "outbound": "warp"})
-with open(cfg_path, "w") as f:
-    json.dump(cfg, f, indent=2)
-PYEOF2
-    then
-      echo "  配置更新失败"
-      return
-    fi
-    if ! sing-box check -c "$CONFIG" >/dev/null 2>&1; then
-      echo "  配置校验失败，已回滚（请手动检查）"
-      return
-    fi
-    echo "  重启服务以生效..."
-    svc restart >/dev/null 2>&1
-    sleep 3
-  fi
-
-  echo "================ 刷 WARP 出口 IP ================"
-  echo "  主服务保持运行，你可以随时用客户端连接 WARP 节点测试。"
-  echo "  每次选 n 会重启服务换 IP（客户端重连一下即可）。"
-  echo ""
-
-  local count=0
-  while true; do
-    count=$((count + 1))
-
-    # 通过本机通道查出口 IP (主服务不停)
-    local egress_ip=""
-    egress_ip=$(curl -fsSL --max-time 12 -x "socks5h://127.0.0.1:${CHECK_PORT}" https://api.ipify.org 2>/dev/null || true)
-
-    if [ -n "$egress_ip" ]; then
-      local info=$(curl -fsSL --max-time 8 "http://ipinfo.io/${egress_ip}/json" 2>/dev/null || echo "")
-      local country=$(echo "$info" | grep -o '"country"[ ]*:[ ]*"[^"]*"' | head -1 | cut -d'"' -f4)
-      local org=$(echo "$info" | grep -o '"org"[ ]*:[ ]*"[^"]*"' | head -1 | cut -d'"' -f4)
-      echo "  [$count] 出口 IP: ${egress_ip}  ${country:-未知}  ${org:-}"
-    else
-      echo "  [$count] 获取出口 IP 失败（检测通道异常），尝试重启服务后重试"
-      svc restart >/dev/null 2>&1
-      sleep 5
-      continue
-    fi
-
-    echo "  👉 用客户端连 WARP 节点，打开 Netflix 测试非自制剧"
-    local ans=""
-    read -rp "  解锁了吗? [y=锁定/n=换下一个IP/q=退出]: " ans
-    case "$ans" in
-      [Yy]*) echo "  已锁定当前 IP ✓"; break ;;
-      [Qq]*) echo "  已退出"; break ;;
-      *)
-        echo "  重启服务换 IP（客户端会断开一下，稍后重连）..."
-        svc restart >/dev/null 2>&1
-        sleep 8  # 等 WireGuard 重连
-        ;;
-    esac
-  done
-  echo ""
-  echo "  完成，主服务运行中 ✓"
-}
-
 # ---------- 主菜单 ----------
 [ "$(id -u)" -eq 0 ] || { echo "请用 root 运行"; exit 1; }
 while true; do
@@ -325,7 +224,7 @@ while true; do
   echo "  7. 刷 WARP 出口 IP (解锁 Netflix)"
   echo "  0. 退出"
   echo "========================================"
-  read -rp "  请选择 [0-7]: " choice
+  read -rp "  请选择 [0-6]: " choice
   case "$choice" in
     1) show_nodes ;;
     2) update_singbox ;;
@@ -333,7 +232,7 @@ while true; do
     4) restart_svc ;;
     5) show_log ;;
     6) uninstall ;;
-    7) brush_warp_ip ;;
+
     0) exit 0 ;;
     *) echo "  无效选择" ;;
   esac
