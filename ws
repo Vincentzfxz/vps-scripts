@@ -393,13 +393,35 @@ re_register_warp() {
   python3 - "$CFG" <<'PYEOF'
 import json, sys, re, base64, subprocess
 cfg_path = sys.argv[1]
-with open(cfg_path) as f: cfg = json.load(f)
-with open('wgcf-profile.conf') as f: profile = f.read()
-priv = re.search(r'^PrivateKey\s*=\s*(\S+)', profile, re.M).group(1)
-addrs = [a.strip() for a in re.search(r'^Address\s*=\s*(.+)$', profile, re.M).group(1).split(',') if a.strip()]
-pub = re.search(r'^PublicKey\s*=\s*(\S+)', profile, re.M).group(1)
-ep = re.search(r'^Endpoint\s*=\s*(\S+)', profile, re.M).group(1)
-host, port = ep.rsplit(':', 1)
+try:
+    with open(cfg_path) as f: cfg = json.load(f)
+    with open('wgcf-profile.conf') as f: profile = f.read()
+    m_priv = re.search(r'^PrivateKey\s*=\s*(\S+)', profile, re.M)
+    m_addr = re.search(r'^Address\s*=\s*(.+)$', profile, re.M)
+    m_pub = re.search(r'^PublicKey\s*=\s*(\S+)', profile, re.M)
+    m_ep = re.search(r'^Endpoint\s*=\s*(\S+)', profile, re.M)
+    if not (m_priv and m_addr and m_pub and m_ep):
+        print("wgcf-profile.conf 解析失败: 缺少必要字段", file=sys.stderr)
+        sys.exit(1)
+    priv = m_priv.group(1)
+    # Address 可能多行或单行逗号分隔, 全部收集
+    addrs = []
+    for m in re.finditer(r'^Address\s*=\s*(.+)$', profile, re.M):
+        addrs += [a.strip() for a in m.group(1).split(',') if a.strip()]
+    if not addrs:
+        print("wgcf-profile.conf 解析失败: Address 为空", file=sys.stderr)
+        sys.exit(1)
+    pub = m_pub.group(1)
+    ep = m_ep.group(1)
+    # Endpoint 可能是 [ipv6]:port 或 host:port
+    if ep.startswith('['):
+        host, port = ep.rsplit(']:', 1)
+        host = host[1:]
+    else:
+        host, port = ep.rsplit(':', 1)
+except Exception as e:
+    print(f"配置文件解析失败: {e}", file=sys.stderr)
+    sys.exit(1)
 reserved = [0, 0, 0]
 dbg = ""
 try:
