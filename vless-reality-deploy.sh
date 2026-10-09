@@ -288,9 +288,9 @@ ensure_swap
 
 echo "==> 安装依赖... (系统: ${OS})"
 if [ "$OS" = "alpine" ]; then
-  apk add --no-cache curl tar openssl ca-certificates bash iproute2 grep gcompat > /dev/null
+  apk add --no-cache curl tar openssl ca-certificates bash iproute2 grep gcompat python3 > /dev/null
 else
-  apt-get update -qq && apt-get install -y -qq curl tar openssl ca-certificates > /dev/null
+  apt-get update -qq && apt-get install -y -qq curl tar openssl ca-certificates python3 > /dev/null
   apt-get clean > /dev/null 2>&1  # 清理缓存, 给小内存腾地方
 fi
 
@@ -416,12 +416,12 @@ if [ "$WARP" = "y" ]; then
       -H "Content-Type: application/json" \
       -H "User-Agent: okhttp/3.12.1" \
       -d "{\"install_id\":\"\",\"tos\":\"${_tos}\",\"key\":\"${_pub_b64}\",\"fcm_token\":\"\",\"type\":\"Android\",\"locale\":\"en_US\"}" \
-      -o _reg_resp.json 2>_curl_err.log; then
-      echo "    WARP 注册失败 (网络错误: $(head -c 200 _curl_err.log)), 跳过 WARP 节点 (主节点不受影响)"
-      rm -f _reg_resp.json _curl_err.log
+      -o /tmp/_reg_resp.json 2>/tmp/_curl_err.log; then
+      echo "    WARP 注册失败 (网络错误: $(head -c 200 /tmp/_curl_err.log)), 跳过 WARP 节点 (主节点不受影响)"
+      rm -f /tmp/_reg_resp.json /tmp/_curl_err.log
     else
-      _reg_resp="$(cat _reg_resp.json 2>/dev/null)"
-      rm -f _reg_resp.json _curl_err.log
+      _reg_resp="$(cat /tmp/_reg_resp.json 2>/dev/null)"
+      rm -f /tmp/_reg_resp.json /tmp/_curl_err.log
     fi
     # 用 python 解析并校验 (比 grep 可靠)
     python3 - "$_reg_resp" "$_priv_b64" <<'PYEOF' > _warp_parsed.json 2>_warp_err.log
