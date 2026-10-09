@@ -63,11 +63,26 @@ with open(cfg_path) as f:
 # 从 wgcf-profile.conf 提取新凭证
 with open('wgcf-profile.conf') as f:
     profile = f.read()
-priv = re.search(r'^PrivateKey\s*=\s*(\S+)', profile, re.M).group(1)
-addrs = [a.strip() for a in re.search(r'^Address\s*=\s*(.+)$', profile, re.M).group(1).split(',') if a.strip()]
-pub = re.search(r'^PublicKey\s*=\s*(\S+)', profile, re.M).group(1)
-ep = re.search(r'^Endpoint\s*=\s*(\S+)', profile, re.M).group(1)
-host, port = ep.rsplit(':', 1)
+m_priv = re.search(r'^PrivateKey\s*=\s*(\S+)', profile, re.M)
+m_pub = re.search(r'^PublicKey\s*=\s*(\S+)', profile, re.M)
+m_ep = re.search(r'^Endpoint\s*=\s*(\S+)', profile, re.M)
+if not (m_priv and m_pub and m_ep):
+    print("wgcf-profile.conf 解析失败", file=sys.stderr)
+    sys.exit(1)
+priv = m_priv.group(1)
+addrs = []
+for m in re.finditer(r'^Address\s*=\s*(.+)$', profile, re.M):
+    addrs += [a.strip() for a in m.group(1).split(',') if a.strip()]
+if not addrs:
+    print("Address 为空", file=sys.stderr)
+    sys.exit(1)
+pub = m_pub.group(1)
+ep = m_ep.group(1)
+if ep.startswith('['):
+    host, port = ep.rsplit(']:', 1)
+    host = host[1:]
+else:
+    host, port = ep.rsplit(':', 1)
 
 # 拿 reserved (跟部署脚本同逻辑)
 reserved = [0, 0, 0]
