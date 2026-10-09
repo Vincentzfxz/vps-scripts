@@ -1,6 +1,7 @@
 #!/bin/bash
 # ============================================================
-# ws - sing-box 节点管理工具
+# ws - sing-box 节点管理工具 | vps-scripts by Vincentzfxz
+# https://github.com/Vincentzfxz/vps-scripts
 # 菜单: 查看节点 / 更新 sing-box / 更改端口 / 重启服务 / 日志 / 卸载 / 换SNI
 # 由 vless-reality-deploy.sh 自动安装到 /usr/local/bin/ws
 # ============================================================
@@ -364,7 +365,7 @@ expand_swap() {
 [ "$(id -u)" -eq 0 ] || { echo "请用 root 运行"; exit 1; }
 while true; do
   echo ""
-  echo "========== sing-box 管理 (ws) =========="
+  echo "========== sing-box 管理 (ws) | Vincentzfxz =========="
   echo "  1. 查看节点信息"
   echo "  2. 更新 sing-box 到最新版"
   echo "  3. 更改端口"
