@@ -286,38 +286,6 @@ echo "  https://github.com/Vincentzfxz/vps-scripts"
 echo "=================================================="
 ensure_swap
 
-# ---- TCP 优化: 开启 BBR 拥塞控制 (高延迟链路提速; 原创精简版, 只取核心三行) ----
-# 失败自动跳过, 不影响部署. 容器内无权限 / 内核不支持时静默跳过
-optimize_tcp() {
-  echo "==> TCP 优化 (BBR)..."
-  if [ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" = "bbr" ]; then
-    echo "    BBR 已开启, 跳过"
-    return 0
-  fi
-  if ! sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bbr; then
-    echo "    内核不支持 BBR (需 4.9+), 跳过"
-    return 0
-  fi
-  if [ ! -w /proc/sys/net/ipv4/tcp_congestion_control ]; then
-    echo "    无权限修改内核参数 (容器限制), 跳过"
-    return 0
-  fi
-  cat > /etc/sysctl.d/99-vps-scripts-bbr.conf <<'EOF'
-# vps-scripts: BBR 拥塞控制 + FQ 队列, 高延迟链路提速
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
-net.ipv4.tcp_fastopen = 3
-EOF
-  sysctl --system >/dev/null 2>&1
-  if [ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" = "bbr" ]; then
-    echo "    BBR 已开启 ✓ (拥塞算法: $(sysctl -n net.ipv4.tcp_congestion_control), 队列: $(sysctl -n net.core.default_qdisc 2>/dev/null))"
-  else
-    echo "    BBR 开启失败, 已跳过 (不影响节点部署)"
-    rm -f /etc/sysctl.d/99-vps-scripts-bbr.conf
-  fi
-}
-optimize_tcp
-
 echo "==> 安装依赖... (系统: ${OS})"
 if [ "$OS" = "alpine" ]; then
   apk add --no-cache curl tar openssl ca-certificates bash iproute2 grep gcompat > /dev/null
@@ -461,22 +429,33 @@ if [ "$WARP" = "y" ]; then
     WARP_RESERVED="[0, 0, 0]"
     _wgcf_id=$(grep -oP '^device_id[ \t]*=[ \t]*"\K[^"]+' wgcf-account.toml 2>/dev/null | head -1)
     _wgcf_token=$(grep -oP '^access_token[ \t]*=[ \t]*"\K[^"]+' wgcf-account.toml 2>/dev/null | head -1)
-    if [ -n "$_wgcf_id" ] && [ -n "$_wgcf_token" ]; then
+    _reserved_dbg=""
+    if [ -z "$_wgcf_id" ]; then
+      _reserved_dbg="device_id 为空"
+    elif [ -z "$_wgcf_token" ]; then
+      _reserved_dbg="access_token 为空"
+    else
       # Cloudflare API 必须带 okhttp User-Agent, 否则 403 拿不到 client_id
-      _client_id=$(curl -fsSL --max-time 10 \
+      _api_resp=$(curl -sL --max-time 10 -w "\nHTTP_CODE:%{http_code}" \
         -H "Authorization: Bearer ${_wgcf_token}" \
         -H "User-Agent: okhttp/3.12.1" \
         -H "Content-Type: application/json" \
-        "https://api.cloudflareclient.com/v0i1909051800/reg/${_wgcf_id}" 2>/dev/null | grep -oP '"client_id"[ \t]*:[ \t]*"\K[^"]+' | head -1)
+        "https://api.cloudflareclient.com/v0i1909051800/reg/${_wgcf_id}" 2>&1)
+      _http_code=$(echo "$_api_resp" | grep -oP 'HTTP_CODE:\K[0-9]+' | tail -1)
+      _client_id=$(echo "$_api_resp" | grep -oP '"client_id"[ \t]*:[ \t]*"\K[^"]+' | head -1)
       if [ -n "$_client_id" ]; then
         _reserved=$(echo -n "$_client_id" | base64 -d 2>/dev/null | od -An -tu1 | tr -s ' ' ',' | sed 's/^,//;s/,$//')
         if [ -n "$_reserved" ]; then
           WARP_RESERVED="[$_reserved]"
+        else
+          _reserved_dbg="client_id 解码失败"
         fi
+      else
+        _reserved_dbg="API 返回 HTTP ${_http_code:-?}, 未含 client_id"
       fi
     fi
     if [ "$WARP_RESERVED" = "[0, 0, 0]" ]; then
-      echo "    WARP reserved: [0, 0, 0] (API 未获取到，用默认值)"
+      echo "    WARP reserved: [0, 0, 0] (API 未获取到，用默认值${_reserved_dbg:+, 原因: $_reserved_dbg})"
     else
       echo "    WARP reserved: ${WARP_RESERVED} (API 获取成功)"
     fi
