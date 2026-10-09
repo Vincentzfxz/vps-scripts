@@ -277,6 +277,38 @@ ensure_swap() {
 }
 ensure_swap
 
+# ---- TCP 优化: 开启 BBR 拥塞控制 (高延迟链路提速; 原创精简版, 只取核心三行) ----
+# 失败自动跳过, 不影响部署. 容器内无权限 / 内核不支持时静默跳过
+optimize_tcp() {
+  echo "==> TCP 优化 (BBR)..."
+  if [ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" = "bbr" ]; then
+    echo "    BBR 已开启, 跳过"
+    return 0
+  fi
+  if ! sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bbr; then
+    echo "    内核不支持 BBR (需 4.9+), 跳过"
+    return 0
+  fi
+  if [ ! -w /proc/sys/net/ipv4/tcp_congestion_control ]; then
+    echo "    无权限修改内核参数 (容器限制), 跳过"
+    return 0
+  fi
+  cat > /etc/sysctl.d/99-vps-scripts-bbr.conf <<'EOF'
+# vps-scripts: BBR 拥塞控制 + FQ 队列, 高延迟链路提速
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+net.ipv4.tcp_fastopen = 3
+EOF
+  sysctl --system >/dev/null 2>&1
+  if [ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" = "bbr" ]; then
+    echo "    BBR 已开启 ✓ (拥塞算法: $(sysctl -n net.ipv4.tcp_congestion_control), 队列: $(sysctl -n net.core.default_qdisc 2>/dev/null))"
+  else
+    echo "    BBR 开启失败, 已跳过 (不影响节点部署)"
+    rm -f /etc/sysctl.d/99-vps-scripts-bbr.conf
+  fi
+}
+optimize_tcp
+
 echo "==> 安装依赖... (系统: ${OS})"
 if [ "$OS" = "alpine" ]; then
   apk add --no-cache curl tar openssl ca-certificates bash iproute2 grep gcompat > /dev/null
