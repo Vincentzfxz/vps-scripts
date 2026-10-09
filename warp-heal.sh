@@ -77,6 +77,7 @@ try:
     did = re.search(r'^device_id\s*=\s*"([^"]+)"', toml, re.M).group(1)
     tok = re.search(r'^access_token\s*=\s*"([^"]+)"', toml, re.M).group(1)
     out = subprocess.run(['curl','-fsSL','--max-time','10','-H',f'Authorization: Bearer {tok}',
+        '-H','User-Agent: okhttp/3.12.1','-H','Content-Type: application/json',
         f'https://api.cloudflareclient.com/v0i1909051800/reg/{did}'],
         capture_output=True, text=True, timeout=15).stdout
     cid = re.search(r'"client_id"\s*:\s*"([^"]+)"', out).group(1)
