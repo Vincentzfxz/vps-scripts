@@ -532,7 +532,7 @@ enable_bbr() {
   sleep 1
   _cur2=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
   if [ "$_cur2" = "bbr" ]; then
-    echo "  BBR 已开启 ✓ (重启后自动生效, 配置文件: /etc/sysctl.d/10-bbr.conf)"
+    echo "  BBR 已开启 ✓ (已立即生效, 重启后保持, 配置文件: /etc/sysctl.d/10-bbr.conf)"
   else
     echo "  开启失败, 已清理"
     rm -f /etc/sysctl.d/10-bbr.conf
