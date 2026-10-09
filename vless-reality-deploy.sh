@@ -9,7 +9,7 @@
 #   Alpine 需先装 bash: apk add --no-cache bash curl
 # 环境变量预设 (可跳过交互输入):
 #   NAME="我的节点" PORT=8443 UUID=... DEST=addons.mozilla.org \
-#   WARP=y PORT2=8444 NAME2="我的节点-WARP" UUID2=... \
+#   WARP=y PORT2=51888 NAME2="我的节点-WARP" UUID2=... \
 #   SOCKS=y SOCKS_PORT=20808 SOCKS_USER=xxx SOCKS_PASS=yyy \
 #   DNS_PRIMARY=1.1.1.1 \
 #   PUBLIC_IP=1.2.3.4 PUBLIC_PORT=20000 PUBLIC_PORT2=20001 PUBLIC_PORT3=20002  # NAT 可选: 预设则跳过交互询问
@@ -146,19 +146,22 @@ ask_port PORT "  监听端口"
 if [ -z "${DEST:-}" ]; then
   echo "==> 自动检测伪装目标站 (测速 + TLS1.3 检查)..."
   BEST=""; BEST_T="999999"
-  for d in www.microsoft.com addons.mozilla.org www.apple.com dl.google.com www.cloudflare.com; do
+  for d in www.microsoft.com www.apple.com addons.mozilla.org swdlp.apple.com www.amazon.com www.samsung.com learn.microsoft.com www.zoom.us www.github.com www.netflix.com; do
     T="$(curl -o /dev/null -s -m 8 --tlsv1.3 -w "%{time_connect}" "https://$d" 2>/dev/null || echo fail)"
     case "$T" in ''|*[!0-9.]*) T="fail";; esac
-    if [ "$T" != "fail" ] && awk "BEGIN{exit !( $T < $BEST_T )}"; then
-      BEST="$d"; BEST_T="$T"; echo "  $d  ${T}s  <-- 当前最快"
-    elif [ "$T" != "fail" ]; then
+    if [ "$T" != "fail" ]; then
       echo "  $d  ${T}s"
+      awk "BEGIN{exit !( $T < $BEST_T )}" && { BEST="$d"; BEST_T="$T"; }
     else
       echo "  $d  不可达或不支持 TLS1.3, 跳过"
     fi
   done
   DEST="${BEST:-www.microsoft.com}"
-  [ -z "$BEST" ] && echo "  都不可达, 回退默认 www.microsoft.com"
+  if [ -n "$BEST" ]; then
+    echo "  ==> 最快: ${BEST} (${BEST_T}s)"
+  else
+    echo "  都不可达, 回退默认 www.microsoft.com"
+  fi
 fi
 _d=""
 tty_read "  伪装域名 (回车用 ${DEST}, 或手动输入): " _d
@@ -173,7 +176,7 @@ if [ -z "$WARP" ]; then
   case "$_w" in [Yy]*) WARP="y";; *) WARP="n";; esac
 fi
 if [ "$WARP" = "y" ]; then
-  PORT2="${PORT2:-8444}"
+  PORT2="${PORT2:-51888}"
   ask_port PORT2 "  WARP 节点监听端口 (不能与 ${PORT} 相同)" "$PORT"
   NAME2="${NAME2:-${NAME}-WARP}"
   _n2=""
@@ -644,6 +647,21 @@ else
   echo "    curl -fsSL https://raw.githubusercontent.com/Vincentzfxz/vps-scripts/main/ws -o /usr/local/bin/ws && chmod +x /usr/local/bin/ws"
 fi
 
+# ---- WARP 自愈: 每 6 小时检测一次，挂了自动重建 (只在部署了 WARP 时) ----
+if [ "$WARP_OK" = "y" ]; then
+  echo "==> 安装 WARP 自愈任务..."
+  if curl -fsSL -m 30 -o /usr/local/bin/warp-heal \
+      "https://raw.githubusercontent.com/Vincentzfxz/vps-scripts/main/warp-heal.sh" 2>/dev/null \
+      && chmod +x /usr/local/bin/warp-heal; then
+    # cron 每 6 小时跑一次 (已有则不重复加)
+    (crontab -l 2>/dev/null | grep -v "warp-heal"; echo "0 */6 * * * /usr/local/bin/warp-heal") | crontab - 2>/dev/null \
+      && echo "    WARP 自愈已启用 (每 6 小时检测，挂了自动重建)" \
+      || echo "    cron 安装失败，可手动加: 0 */6 * * * /usr/local/bin/warp-heal"
+  else
+    echo "    warp-heal 下载失败，跳过自愈 (不影响节点使用)"
+  fi
+fi
+
 echo "==> 放行防火墙..."
 _fw_ports="$PORT"
 [ "$WARP_OK" = "y" ] && [ -n "${PORT2:-}" ] && _fw_ports="$_fw_ports $PORT2"
@@ -663,7 +681,14 @@ if [ -n "$PUBLIC_IP" ]; then
   SERVER_IP="$PUBLIC_IP"
   echo "    使用手动指定的公网 IP: ${SERVER_IP} (NAT 模式)"
 else
-  SERVER_IP="$(curl -fsSL -m 10 ifconfig.me || curl -fsSL -m 10 ip.sb || true)"
+  # 优先 IPv4 (多数客户端/软路由 IPv6 支持不完善); 无 v4 才用 v6
+  SERVER_IP="$(curl -4 -fsSL -m 10 ifconfig.me 2>/dev/null || curl -4 -fsSL -m 10 ip.sb 2>/dev/null || true)"
+  if [ -z "$SERVER_IP" ]; then
+    SERVER_IP="$(curl -fsSL -m 10 ifconfig.me || curl -fsSL -m 10 ip.sb || true)"
+    [ -n "$SERVER_IP" ] && echo "    (无 IPv4, 使用 IPv6: ${SERVER_IP})"
+  else
+    echo "    检测到 IPv4: ${SERVER_IP}"
+  fi
   [ -z "$SERVER_IP" ] && SERVER_IP="<你的VPS_IP>"
 fi
 # NAT 机器: 链接中的端口可用 PUBLIC_PORT/PUBLIC_PORT2 覆盖为面板映射的外网端口
