@@ -12,7 +12,7 @@ VPS 一键部署 **VLESS + Reality** 代理节点。Debian / Ubuntu / Alpine 全
 | **双节点模式** | 直连节点 + WARP 出站节点（Cloudflare 出口），WARP 账号自动注册 |
 | **SOCKS5 代理** | 可选，带账号密码，适合指纹浏览器等场景 |
 | **BBR 加速** | 部署时自动开启 BBR + FQ，高延迟链路提速（不支持时自动跳过） |
-| **ws 管理命令** | 9 项功能：查看节点、更新内核、改端口、换 SNI、改名、扩容 swap、实时日志、一键卸载 |
+| **ws 管理命令** | 10 项功能：查看节点、更新内核、改端口、换 SNI、改名、扩容 swap、重注册 WARP、实时日志、一键卸载 |
 | **WARP 自愈** | 每 6 小时检测 WARP 连通性，挂了自动重建，直连不受影响 |
 | **小内存优化** | 64MB/128MB 小鸡自动创建 swap，安装不被 OOM 干掉 |
 | **端口占用预检** | 部署前检测端口占用，拒绝玄学启动失败 |
@@ -51,6 +51,7 @@ curl -fsSL https://raw.githubusercontent.com/Vincentzfxz/vps-scripts/main/instal
 | 7 | 更换 SNI（伪装域名，不影响 DNS） |
 | 8 | 改节点名（只改备注，无需重启） |
 | 9 | 扩容 swap（默认 1024MB） |
+| 10 | 重新注册 WARP（换账号，有机会换出口 IP） |
 
 ## 🔧 高级用法
 
