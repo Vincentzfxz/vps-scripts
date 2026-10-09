@@ -37,8 +37,6 @@ curl -fsSL https://raw.githubusercontent.com/Vincentzfxz/vps-scripts/main/instal
 | 5 | 查看实时日志 |
 | 6 | 完全卸载 |
 
-
-
 ## 🔧 高级用法
 
 环境变量预设（跳过交互）：
@@ -67,3 +65,7 @@ NAT 机器：
 - 需要 root 权限运行
 - v2rayN 用户请切换到 **Xray_core** 内核
 - 商家安全组 / 云防火墙需放行相应 TCP 端口
+
+### 🔄 WARP 自愈
+
+部署时如选了 WARP 节点，脚本会自动安装自愈任务：每 6 小时检测一次 WARP 连通性，挂了自动重新注册账号并重建，**直连节点不受影响**。日志在 `/var/log/warp-heal.log`，卸载时会自动清理。
