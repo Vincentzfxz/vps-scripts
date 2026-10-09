@@ -306,10 +306,58 @@ uninstall() {
   (crontab -l 2>/dev/null | grep -v "warp-heal") | crontab - 2>/dev/null
   rm -rf /etc/sing-box
   rm -f "$LINK_FILE" "$SOCKS_FILE" "${CONFIG}.bak"
+  # 回滚本脚本安装的 BBR 优化 (恢复系统默认拥塞算法)
+  if [ -f /etc/sysctl.d/99-vps-scripts-bbr.conf ]; then
+    echo "  回滚 BBR 优化..."
+    rm -f /etc/sysctl.d/99-vps-scripts-bbr.conf
+    sysctl -w net.ipv4.tcp_congestion_control=cubic >/dev/null 2>&1
+    sysctl -w net.core.default_qdisc=pfifo_fast >/dev/null 2>&1
+  fi
   echo ""
   echo "  卸载完成。删除本工具..."
   rm -f /usr/local/bin/ws
   exit 0
+}
+
+# ---------- 9. 扩容 swap ----------
+expand_swap() {
+  local mem_mb swap_mb avail_mb size
+  mem_mb=$(awk '/^MemTotal:/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo "?")
+  swap_mb=$(awk '/^SwapTotal:/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
+  echo ""
+  echo "  当前内存: ${mem_mb}MB, 已有 swap: ${swap_mb}MB"
+  if [ -f /swapfile ] && swapon --show 2>/dev/null | grep -q "/swapfile"; then
+    echo "  提示: /swapfile 已存在并启用, 继续将删除重建"
+  fi
+  read -rp "  输入 swap 大小 (MB, 回车默认 1024): " size
+  size="${size:-1024}"
+  if ! [[ "$size" =~ ^[0-9]+$ ]] || [ "$size" -lt 128 ]; then
+    echo "  无效输入 (需为 >=128 的数字)"
+    return 1
+  fi
+  avail_mb=$(df -m / 2>/dev/null | awk 'END {print $4}')
+  if [ "${avail_mb:-0}" -lt "$size" ]; then
+    echo "  磁盘空间不足 (可用 ${avail_mb}MB, 需要 ${size}MB)"
+    return 1
+  fi
+  echo "  正在创建 ${size}MB swap (较慢, 请稍候)..."
+  swapoff /swapfile 2>/dev/null
+  rm -f /swapfile
+  if dd if=/dev/zero of=/swapfile bs=1M count="$size" 2>/dev/null \
+     && chmod 600 /swapfile && mkswap /swapfile >/dev/null 2>&1; then
+    if swapon /swapfile 2>/dev/null; then
+      grep -q "^/swapfile" /etc/fstab 2>/dev/null || echo "/swapfile none swap sw 0 0" >> /etc/fstab
+      echo "  swap 已扩容到 ${size}MB ✓ (重启自动挂载)"
+    else
+      echo "  swapon 失败: 当前环境 (容器等) 不支持 swap, 已清理"
+      rm -f /swapfile
+      return 1
+    fi
+  else
+    echo "  swap 文件创建失败"
+    rm -f /swapfile
+    return 1
+  fi
 }
 
 # ---------- 主菜单 ----------
@@ -325,9 +373,10 @@ while true; do
   echo "  6. 完全卸载"
   echo "  7. 更换 SNI"
   echo "  8. 改节点名"
+  echo "  9. 扩容 swap"
   echo "  0. 退出"
   echo "========================================"
-  read -rp "  请选择 [0-8]: " choice
+  read -rp "  请选择 [0-9]: " choice
   case "$choice" in
     1) show_nodes ;;
     2) update_singbox ;;
@@ -337,6 +386,7 @@ while true; do
     6) uninstall ;;
     7) change_sni ;;
     8) rename_node ;;
+    9) expand_swap ;;
 
     0) exit 0 ;;
     *) echo "  无效选择" ;;
