@@ -412,6 +412,7 @@ if [ "$WARP" = "y" ]; then
     WARP_ADDRS="$(awk '/^Address[ \t]*=/{sub(/^[^=]*=[ \t]*/,""); gsub(/[ \t\r]+$/,""); print}' wgcf-profile.conf 2>/dev/null | paste -sd',' -)"
     WARP_PUB="$(awk '/^PublicKey[ \t]*=/{sub(/^[^=]*=[ \t]*/,""); gsub(/[ \t\r]+$/,""); print}' wgcf-profile.conf 2>/dev/null)"
     # ---- 获取 WARP reserved 字节 (Cloudflare 按设备路由用, 缺了会握手通但数据不通) ----
+    # 兜底用 WireGuard 协议标准默认值 [0,0,0]; 主路径走 API 拿真实 reserved, 失败才用这个
     WARP_RESERVED="[0, 0, 0]"
     _wgcf_id=$(grep -oP '^device_id[ \t]*=[ \t]*"\K[^"]+' wgcf-account.toml 2>/dev/null | head -1)
     _wgcf_token=$(grep -oP '^access_token[ \t]*=[ \t]*"\K[^"]+' wgcf-account.toml 2>/dev/null | head -1)
