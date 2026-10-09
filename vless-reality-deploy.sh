@@ -61,6 +61,7 @@ tty_read() { # tty_read <提示语> <变量名> : 提示语正常显示; 非交�
   if [ -t 0 ]; then
     IFS= read -rp "$prompt" _in || _in=""
   elif { true </dev/tty; } 2>/dev/null; then
+    stty echo </dev/tty 2>/dev/null  # 确保输入回显 (管道模式下某些终端会关掉)
     IFS= read -rp "$prompt" _in </dev/tty || _in=""
   fi
   printf -v "$var" '%s' "$_in"
