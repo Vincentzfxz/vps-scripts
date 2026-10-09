@@ -147,7 +147,7 @@ ask_port PORT "  监听端口"
 if [ -z "${DEST:-}" ]; then
   echo "==> 自动检测伪装目标站 (测速 + TLS1.3 检查)..."
   BEST=""; BEST_T="999999"
-  for d in www.microsoft.com www.apple.com addons.mozilla.org swdlp.apple.com www.amazon.com www.samsung.com learn.microsoft.com www.zoom.us www.github.com www.netflix.com; do
+  for d in www.microsoft.com www.apple.com addons.mozilla.org swdlp.apple.com www.amazon.com www.samsung.com learn.microsoft.com www.zoom.us www.github.com www.adobe.com; do
     T="$(curl -o /dev/null -s -m 8 --tlsv1.3 -w "%{time_connect}" "https://$d" 2>/dev/null || echo fail)"
     case "$T" in ''|*[!0-9.]*) T="fail";; esac
     if [ "$T" != "fail" ]; then
