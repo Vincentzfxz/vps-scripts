@@ -49,10 +49,18 @@ _priv_b64="$(base64 -w0 _wgpriv.raw 2>/dev/null)"
 _pub_b64="$(base64 -w0 _wgpub.raw 2>/dev/null)"
 rm -f _wgpriv.pem _wgpriv.raw _wgpub.raw
 _tos="$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")"
-_reg_resp="$(curl -s --max-time 20 -X POST "https://api.cloudflareclient.com/v0a5641/reg" \
+if ! curl -s --max-time 20 -X POST "https://api.cloudflareclient.com/v0a5641/reg" \
   -H "Content-Type: application/json" \
   -H "User-Agent: okhttp/3.12.1" \
-  -d "{\"install_id\":\"\",\"tos\":\"${_tos}\",\"key\":\"${_pub_b64}\",\"fcm_token\":\"\",\"type\":\"Android\",\"locale\":\"en_US\"}" 2>&1)"
+  -d "{\"install_id\":\"\",\"tos\":\"${_tos}\",\"key\":\"${_pub_b64}\",\"fcm_token\":\"\",\"type\":\"Android\",\"locale\":\"en_US\"}" \
+  -o _reg_resp.json 2>/dev/null; then
+  log "WARP 重新注册失败 (网络错误), 恢复旧账号"
+  [ -f warp-account.json.bak ] && mv warp-account.json.bak warp-account.json
+  rm -f _reg_resp.json
+  exit 1
+fi
+_reg_resp="$(cat _reg_resp.json 2>/dev/null)"
+rm -f _reg_resp.json
 python3 - "$_reg_resp" "$_priv_b64" <<'PYEOF' > _warp_parsed.json 2>/dev/null
 import json, sys, base64
 try:
