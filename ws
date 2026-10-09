@@ -308,9 +308,9 @@ uninstall() {
   rm -rf /etc/sing-box
   rm -f "$LINK_FILE" "$SOCKS_FILE" "${CONFIG}.bak"
   # 回滚本脚本安装的 BBR 优化 (恢复系统默认拥塞算法)
-  if [ -f /etc/sysctl.d/99-vps-scripts-bbr.conf ]; then
+  if [ -f /etc/sysctl.d/10-bbr.conf ] || [ -f /etc/sysctl.d/99-vps-scripts-bbr.conf ]; then
     echo "  回滚 BBR 优化..."
-    rm -f /etc/sysctl.d/99-vps-scripts-bbr.conf
+    rm -f /etc/sysctl.d/10-bbr.conf /etc/sysctl.d/99-vps-scripts-bbr.conf
     sysctl -w net.ipv4.tcp_congestion_control=cubic >/dev/null 2>&1
     sysctl -w net.core.default_qdisc=pfifo_fast >/dev/null 2>&1
   fi
@@ -401,18 +401,27 @@ pub = re.search(r'^PublicKey\s*=\s*(\S+)', profile, re.M).group(1)
 ep = re.search(r'^Endpoint\s*=\s*(\S+)', profile, re.M).group(1)
 host, port = ep.rsplit(':', 1)
 reserved = [0, 0, 0]
+dbg = ""
 try:
     with open('wgcf-account.toml') as f: toml = f.read()
     did = re.search(r'^device_id\s*=\s*"([^"]+)"', toml, re.M).group(1)
     tok = re.search(r'^access_token\s*=\s*"([^"]+)"', toml, re.M).group(1)
-    out = subprocess.run(['curl','-fsSL','--max-time','10','-H',f'Authorization: Bearer {tok}',
+    out = subprocess.run(['curl','-sL','--max-time','10','-w','\nHTTP_CODE:%{http_code}',
+        '-H',f'Authorization: Bearer {tok}',
         '-H','User-Agent: okhttp/3.12.1','-H','Content-Type: application/json',
         f'https://api.cloudflareclient.com/v0i1909051800/reg/{did}'],
         capture_output=True, text=True, timeout=15).stdout
-    cid = re.search(r'"client_id"\s*:\s*"([^"]+)"', out).group(1)
-    raw = base64.b64decode(cid)
-    if len(raw) >= 3: reserved = list(raw[:3])
-except Exception: pass
+    m = re.search(r'HTTP_CODE:(\d+)', out)
+    code = m.group(1) if m else "?"
+    cid_m = re.search(r'"client_id"\s*:\s*"([^"]+)"', out)
+    if cid_m:
+        raw = base64.b64decode(cid_m.group(1))
+        if len(raw) >= 3: reserved = list(raw[:3])
+        else: dbg = "client_id 解码失败"
+    else:
+        dbg = f"API 返回 HTTP {code}, 未含 client_id"
+except Exception as e:
+    dbg = f"异常: {e}"
 updated = 0
 for ep_list in ['endpoints', 'outbounds']:
     for item in cfg.get(ep_list, []):
@@ -425,7 +434,7 @@ for ep_list in ['endpoints', 'outbounds']:
             updated += 1
 if updated == 0: print("未找到 warp 配置", file=sys.stderr); sys.exit(1)
 with open(cfg_path, 'w') as f: json.dump(cfg, f, indent=2)
-print(f"已更新 {updated} 个 warp 配置, reserved={reserved}")
+print(f"已更新 {updated} 个 warp 配置, reserved={reserved}" + (f", 原因: {dbg}" if dbg and reserved == [0,0,0] else "") + ")")
 PYEOF
   [ $? -ne 0 ] && { echo "  配置更新失败, 已备份原配置"; return 1; }
   if ! sing-box check -c "$CFG" >/dev/null 2>&1; then
@@ -433,11 +442,52 @@ PYEOF
     return 1
   fi
   if command -v systemctl >/dev/null 2>&1; then systemctl restart sing-box; else rc-service sing-box restart; fi
-  sleep 6
-  _new_ip=$(curl -fsSL --max-time 15 -x "socks5h://127.0.0.1:10809" https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | grep "^ip=" | cut -d= -f2)
+  echo "  等待 WireGuard 握手 (最多 60 秒)..."
+  _new_ip=""
+  for _try in $(seq 1 12); do
+    sleep 5
+    _new_ip=$(curl -fsSL --max-time 10 -x "socks5h://127.0.0.1:10809" https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | grep "^ip=" | cut -d= -f2)
+    [ -n "$_new_ip" ] && break
+    echo "  等待中... (${_try}/12)"
+  done
   echo "  新 WARP 出口 IP: ${_new_ip:-检测失败}"
   [ -n "$_new_ip" ] && [ "$_new_ip" != "$_old_ip" ] && echo "  ✓ IP 已更换"
   [ -n "$_new_ip" ] && [ "$_new_ip" = "$_old_ip" ] && echo "  (IP 未变, Cloudflare 路由到同一出口, 可再试一次)"
+}
+
+# ---------- 11. 开启 BBR 加速 ----------
+enable_bbr() {
+  _cur=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+  _avail=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null)
+  echo ""
+  echo "  当前拥塞算法: ${_cur:-未知}"
+  echo "  可用算法列表: ${_avail:-未知}"
+  if [ "$_cur" = "bbr" ]; then
+    echo "  BBR 已在运行 ✓, 无需操作"
+    return 0
+  fi
+  if ! echo "$_avail" | grep -qw bbr; then
+    echo "  当前内核未编译 BBR 模块 (如 deb13-cloud 精简内核), 无法开启"
+    echo "  如需 BBR 请更换完整版内核"
+    return 1
+  fi
+  if [ ! -w /proc/sys/net/ipv4/tcp_congestion_control ]; then
+    echo "  无权限修改内核参数 (容器限制), 无法开启"
+    return 1
+  fi
+  echo "  正在开启 BBR + FQ..."
+  echo "net.core.default_qdisc = fq" > /etc/sysctl.d/10-bbr.conf
+  echo "net.ipv4.tcp_congestion_control = bbr" >> /etc/sysctl.d/10-bbr.conf
+  sysctl --system >/dev/null 2>&1
+  sleep 1
+  _cur2=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+  if [ "$_cur2" = "bbr" ]; then
+    echo "  BBR 已开启 ✓ (重启后自动生效, 配置文件: /etc/sysctl.d/10-bbr.conf)"
+  else
+    echo "  开启失败, 已清理"
+    rm -f /etc/sysctl.d/10-bbr.conf
+    return 1
+  fi
 }
 
 # ---------- 主菜单 ----------
@@ -455,9 +505,10 @@ while true; do
   echo "  8. 改节点名"
   echo "  9. 扩容 swap"
   echo "  10. 重新注册 WARP (换出口 IP)"
+  echo "  11. 开启 BBR 加速"
   echo "  0. 退出"
   echo "========================================"
-  read -rp "  请选择 [0-10]: " choice
+  read -rp "  请选择 [0-11]: " choice
   case "$choice" in
     1) show_nodes ;;
     2) update_singbox ;;
@@ -469,6 +520,7 @@ while true; do
     8) rename_node ;;
     9) expand_swap ;;
     10) re_register_warp ;;
+    11) enable_bbr ;;
 
     0) exit 0 ;;
     *) echo "  无效选择" ;;
