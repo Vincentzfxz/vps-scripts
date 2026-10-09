@@ -36,6 +36,7 @@ curl -fsSL https://raw.githubusercontent.com/Vincentzfxz/vps-scripts/main/instal
 | 4 | 重启服务 |
 | 5 | 查看实时日志 |
 | 6 | 完全卸载 |
+| 7 | 更换 SNI（伪装域名） |
 
 ## 🔧 高级用法
 
