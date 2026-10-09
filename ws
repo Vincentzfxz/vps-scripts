@@ -381,14 +381,28 @@ re_register_warp() {
     [ -n "$WGCF_VER" ] && curl -fsSL -o wgcf "https://github.com/ViRb3/wgcf/releases/download/${WGCF_VER}/wgcf_${WGCF_VER#v}_linux_${ARCH}" 2>/dev/null && chmod +x wgcf
   fi
   [ -x ./wgcf ] || { echo "  wgcf 不可用"; return 1; }
-  # 备份配置
+  # 备份配置和旧账号 (注册失败可恢复)
   cp "$CFG" "${CFG}.bak.$(date +%Y%m%d%H%M%S)"
+  cp wgcf-account.toml wgcf-account.toml.bak 2>/dev/null
+  cp wgcf-profile.conf wgcf-profile.conf.bak 2>/dev/null
   echo "  正在重新注册..."
   rm -f wgcf-account.toml wgcf-profile.conf
   if ! ./wgcf register --accept-tos >/dev/null 2>&1 || ! ./wgcf generate >/dev/null 2>&1; then
     echo "  注册失败 (Cloudflare API 可能限流, 稍后再试)"
+    [ -f wgcf-account.toml.bak ] && mv wgcf-account.toml.bak wgcf-account.toml
+    [ -f wgcf-profile.conf.bak ] && mv wgcf-profile.conf.bak wgcf-profile.conf
     return 1
   fi
+  # 校验新凭证非空 (Cloudflare 限流时会返回空凭证)
+  _new_id=$(grep -oP '^device_id[ \t]*=[ \t]*"\K[^"]+' wgcf-account.toml 2>/dev/null | head -1)
+  if [ -z "$_new_id" ]; then
+    echo "  警告: 新账号凭证为空 (Cloudflare 限流), 已恢复旧账号"
+    [ -f wgcf-account.toml.bak ] && mv wgcf-account.toml.bak wgcf-account.toml
+    [ -f wgcf-profile.conf.bak ] && mv wgcf-profile.conf.bak wgcf-profile.conf
+    echo "  建议: 等几小时后再试, 频繁注册会被限流"
+    return 1
+  fi
+  rm -f wgcf-account.toml.bak wgcf-profile.conf.bak
   echo "  新账号注册成功, 更新配置..."
   python3 - "$CFG" <<'PYEOF'
 import json, sys, re, base64, subprocess
@@ -464,13 +478,16 @@ PYEOF
     return 1
   fi
   if command -v systemctl >/dev/null 2>&1; then systemctl restart sing-box; else rc-service sing-box restart; fi
-  echo "  等待 WireGuard 握手 (最多 60 秒)..."
+  echo "  等待 WireGuard 握手 (最多约 60 秒)..."
   _new_ip=""
-  for _try in $(seq 1 12); do
-    sleep 5
-    _new_ip=$(curl -fsSL --max-time 10 -x "socks5h://127.0.0.1:10809" https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | grep "^ip=" | cut -d= -f2)
+  _deadline=$(($(date +%s) + 60))
+  _try=0
+  while [ $(date +%s) -lt $_deadline ]; do
+    _try=$((_try + 1))
+    _new_ip=$(curl -fsSL --max-time 5 -x "socks5h://127.0.0.1:10809" https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | grep "^ip=" | cut -d= -f2)
     [ -n "$_new_ip" ] && break
-    echo "  等待中... (${_try}/12)"
+    echo "  等待中... (${_try})"
+    sleep 3
   done
   echo "  新 WARP 出口 IP: ${_new_ip:-检测失败}"
   [ -n "$_new_ip" ] && [ "$_new_ip" != "$_old_ip" ] && echo "  ✓ IP 已更换"
