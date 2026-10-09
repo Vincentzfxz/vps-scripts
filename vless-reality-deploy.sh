@@ -415,7 +415,15 @@ if [ "$WARP" = "y" ]; then
       echo "    复用已有 WARP 账号"
     else
       if ./wgcf register --accept-tos >/dev/null 2>&1 && ./wgcf generate >/dev/null 2>&1; then
-        echo "    WARP 账号注册成功"
+        # 校验凭证非空 (Cloudflare 限流时会返回空凭证)
+        _check_id=$(grep -oP '^device_id[ \t]*=[ \t]*"\K[^"]+' wgcf-account.toml 2>/dev/null | head -1)
+        if [ -n "$_check_id" ]; then
+          echo "    WARP 账号注册成功"
+        else
+          echo "    WARP 注册返回空凭证 (Cloudflare 限流), 跳过 WARP 节点 (主节点不受影响)"
+          echo "    建议: 等几小时后再试, 频繁注册会被限流"
+          rm -f wgcf-account.toml wgcf-profile.conf
+        fi
       else
         echo "    WARP 注册失败 (可能连不上 Cloudflare API), 跳过 WARP 节点 (主节点不受影响)"
       fi
