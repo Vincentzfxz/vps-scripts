@@ -361,6 +361,85 @@ expand_swap() {
   fi
 }
 
+# ---------- 10. 重新注册 WARP (换账号, 有机会换出口 IP) ----------
+re_register_warp() {
+  local CFG="/etc/sing-box/config.json" WARP_DIR="/etc/sing-box/warp"
+  if [ ! -f "$CFG" ] || ! grep -q '"tag": "warp"' "$CFG" 2>/dev/null; then
+    echo "  未部署 WARP 节点, 无需操作"
+    return 1
+  fi
+  # 显示当前出口 IP
+  _old_ip=$(curl -fsSL --max-time 15 -x "socks5h://127.0.0.1:10809" https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | grep "^ip=" | cut -d= -f2)
+  echo "  当前 WARP 出口 IP: ${_old_ip:-未知}"
+  read -rp "  确定重新注册 WARP 账号? (新账号可能换出口 IP) [y/N]: " c
+  [[ "$c" =~ ^[Yy]$ ]] || { echo "  已取消"; return 0; }
+  [ -d "$WARP_DIR" ] || { echo "  WARP 目录不存在"; return 1; }
+  cd "$WARP_DIR" || return 1
+  ARCH="$(uname -m)"; [ "$ARCH" = "x86_64" ] && ARCH="amd64"; [ "$ARCH" = "aarch64" ] && ARCH="arm64"
+  if [ ! -x ./wgcf ]; then
+    WGCF_VER="$(curl -fsSL https://api.github.com/repos/ViRb3/wgcf/releases/latest 2>/dev/null | grep -oP '"tag_name":\s*"\Kv[0-9.]+' | head -1)"
+    [ -n "$WGCF_VER" ] && curl -fsSL -o wgcf "https://github.com/ViRb3/wgcf/releases/download/${WGCF_VER}/wgcf_${WGCF_VER#v}_linux_${ARCH}" 2>/dev/null && chmod +x wgcf
+  fi
+  [ -x ./wgcf ] || { echo "  wgcf 不可用"; return 1; }
+  # 备份配置
+  cp "$CFG" "${CFG}.bak.$(date +%Y%m%d%H%M%S)"
+  echo "  正在重新注册..."
+  rm -f wgcf-account.toml wgcf-profile.conf
+  if ! ./wgcf register --accept-tos >/dev/null 2>&1 || ! ./wgcf generate >/dev/null 2>&1; then
+    echo "  注册失败 (Cloudflare API 可能限流, 稍后再试)"
+    return 1
+  fi
+  echo "  新账号注册成功, 更新配置..."
+  python3 - "$CFG" <<'PYEOF'
+import json, sys, re, base64, subprocess
+cfg_path = sys.argv[1]
+with open(cfg_path) as f: cfg = json.load(f)
+with open('wgcf-profile.conf') as f: profile = f.read()
+priv = re.search(r'^PrivateKey\s*=\s*(\S+)', profile, re.M).group(1)
+addrs = [a.strip() for a in re.search(r'^Address\s*=\s*(.+)$', profile, re.M).group(1).split(',') if a.strip()]
+pub = re.search(r'^PublicKey\s*=\s*(\S+)', profile, re.M).group(1)
+ep = re.search(r'^Endpoint\s*=\s*(\S+)', profile, re.M).group(1)
+host, port = ep.rsplit(':', 1)
+reserved = [0, 0, 0]
+try:
+    with open('wgcf-account.toml') as f: toml = f.read()
+    did = re.search(r'^device_id\s*=\s*"([^"]+)"', toml, re.M).group(1)
+    tok = re.search(r'^access_token\s*=\s*"([^"]+)"', toml, re.M).group(1)
+    out = subprocess.run(['curl','-fsSL','--max-time','10','-H',f'Authorization: Bearer {tok}',
+        '-H','User-Agent: okhttp/3.12.1','-H','Content-Type: application/json',
+        f'https://api.cloudflareclient.com/v0i1909051800/reg/{did}'],
+        capture_output=True, text=True, timeout=15).stdout
+    cid = re.search(r'"client_id"\s*:\s*"([^"]+)"', out).group(1)
+    raw = base64.b64decode(cid)
+    if len(raw) >= 3: reserved = list(raw[:3])
+except Exception: pass
+updated = 0
+for ep_list in ['endpoints', 'outbounds']:
+    for item in cfg.get(ep_list, []):
+        if item.get('type') == 'wireguard' and item.get('tag') == 'warp':
+            item['address'] = addrs; item['private_key'] = priv
+            for peer in item.get('peers', []):
+                peer['address'] = host; peer['port'] = int(port)
+                peer['public_key'] = pub; peer['reserved'] = reserved
+                peer['persistent_keepalive_interval'] = 25
+            updated += 1
+if updated == 0: print("未找到 warp 配置", file=sys.stderr); sys.exit(1)
+with open(cfg_path, 'w') as f: json.dump(cfg, f, indent=2)
+print(f"已更新 {updated} 个 warp 配置, reserved={reserved}")
+PYEOF
+  [ $? -ne 0 ] && { echo "  配置更新失败, 已备份原配置"; return 1; }
+  if ! sing-box check -c "$CFG" >/dev/null 2>&1; then
+    echo "  配置校验失败, 已备份原配置"
+    return 1
+  fi
+  if command -v systemctl >/dev/null 2>&1; then systemctl restart sing-box; else rc-service sing-box restart; fi
+  sleep 6
+  _new_ip=$(curl -fsSL --max-time 15 -x "socks5h://127.0.0.1:10809" https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | grep "^ip=" | cut -d= -f2)
+  echo "  新 WARP 出口 IP: ${_new_ip:-检测失败}"
+  [ -n "$_new_ip" ] && [ "$_new_ip" != "$_old_ip" ] && echo "  ✓ IP 已更换"
+  [ -n "$_new_ip" ] && [ "$_new_ip" = "$_old_ip" ] && echo "  (IP 未变, Cloudflare 路由到同一出口, 可再试一次)"
+}
+
 # ---------- 主菜单 ----------
 [ "$(id -u)" -eq 0 ] || { echo "请用 root 运行"; exit 1; }
 while true; do
@@ -375,9 +454,10 @@ while true; do
   echo "  7. 更换 SNI"
   echo "  8. 改节点名"
   echo "  9. 扩容 swap"
+  echo "  10. 重新注册 WARP (换出口 IP)"
   echo "  0. 退出"
   echo "========================================"
-  read -rp "  请选择 [0-9]: " choice
+  read -rp "  请选择 [0-10]: " choice
   case "$choice" in
     1) show_nodes ;;
     2) update_singbox ;;
@@ -388,6 +468,7 @@ while true; do
     7) change_sni ;;
     8) rename_node ;;
     9) expand_swap ;;
+    10) re_register_warp ;;
 
     0) exit 0 ;;
     *) echo "  无效选择" ;;
