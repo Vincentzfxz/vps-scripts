@@ -1,29 +1,133 @@
-#!/bin/sh
-# ============================================================
-# 通用一键入口 (POSIX sh, 无需 bash)
-# 自动识别系统, 补齐 bash/curl, 然后执行主部署脚本
-# 用法:
-#   curl -fsSL https://raw.githubusercontent.com/Vincentzfxz/vps-scripts/main/install.sh | sh
-# 带参数:
-#   curl -fsSL https://raw.githubusercontent.com/Vincentzfxz/vps-scripts/main/install.sh | NAME="澳门" PORT=8443 sh
-# ============================================================
-set -e
+#!/usr/bin/env bash
+# warp-heal: WARP 自愈脚本
+# 每 6 小时由 cron 调用一次，检测 WARP 连通性，挂了自动重建
+# 直连节点不受影响
+set -u
+LOG="/var/log/warp-heal.log"
+CFG="/etc/sing-box/config.json"
+WARP_DIR="/etc/sing-box/warp"
 
-MAIN_URL="https://raw.githubusercontent.com/Vincentzfxz/vps-scripts/main/vless-reality-deploy.sh"
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"; }
 
-if [ -f /etc/alpine-release ]; then
-  echo "检测到 Alpine, 补齐 bash/curl..."
-  apk add --no-cache bash curl >/dev/null 2>&1
-else
-  if ! command -v curl >/dev/null 2>&1; then
-    echo "安装 curl..."
-    apt-get update -qq && apt-get install -y -qq curl >/dev/null 2>&1
-  fi
-  if ! command -v bash >/dev/null 2>&1; then
-    echo "安装 bash..."
-    apt-get update -qq && apt-get install -y -qq bash >/dev/null 2>&1
-  fi
+# 1. 检查是否有 WARP 配置，没有就退出
+if [ ! -f "$CFG" ] || ! grep -q '"tag": "warp"' "$CFG" 2>/dev/null; then
+  exit 0
 fi
 
-# 环境变量会自动透传给主脚本
-curl -fsSL "$MAIN_URL" | bash
+# 2. 检测连通性 (3 次机会)
+ok=0
+for i in 1 2 3; do
+  if curl -fsSL --max-time 15 -x "socks5h://127.0.0.1:10809" \
+      https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | grep -q "warp=on"; then
+    ok=1
+    break
+  fi
+  sleep 5
+done
+
+if [ "$ok" = "1" ]; then
+  # 正常，啥也不干 (每天只记一条，避免日志爆炸)
+  if ! grep -q "$(date '+%Y-%m-%d').*WARP 正常" "$LOG" 2>/dev/null; then
+    log "WARP 正常"
+  fi
+  exit 0
+fi
+
+log "WARP 连续 3 次检测失败，开始重建..."
+
+# 3. 重建 WARP 账号
+cd "$WARP_DIR" 2>/dev/null || { log "WARP 目录不存在，跳过"; exit 1; }
+ARCH="$(uname -m)"; [ "$ARCH" = "x86_64" ] && ARCH="amd64"; [ "$ARCH" = "aarch64" ] && ARCH="arm64"
+if [ ! -x ./wgcf ]; then
+  WGCF_VER="$(curl -fsSL https://api.github.com/repos/ViRb3/wgcf/releases/latest 2>/dev/null | grep -oP '"tag_name":\s*"\Kv[0-9.]+' | head -1)"
+  [ -n "$WGCF_VER" ] && curl -fsSL -o wgcf "https://github.com/ViRb3/wgcf/releases/download/${WGCF_VER}/wgcf_${WGCF_VER#v}_linux_${ARCH}" 2>/dev/null && chmod +x wgcf
+fi
+if [ ! -x ./wgcf ]; then log "wgcf 不可用，跳过重建"; exit 1; fi
+
+# 删旧账号，重新注册
+rm -f wgcf-account.toml wgcf-profile.conf
+if ! ./wgcf register --accept-tos >/dev/null 2>&1 || ! ./wgcf generate >/dev/null 2>&1; then
+  log "WARP 重新注册失败"
+  exit 1
+fi
+log "WARP 账号重新注册成功"
+
+# 4. 用 Python 更新 sing-box 配置中的 wireguard 部分
+python3 - "$CFG" <<'PYEOF'
+import json, sys, re, base64, subprocess
+
+cfg_path = sys.argv[1]
+with open(cfg_path) as f:
+    cfg = json.load(f)
+
+# 从 wgcf-profile.conf 提取新凭证
+with open('wgcf-profile.conf') as f:
+    profile = f.read()
+priv = re.search(r'^PrivateKey\s*=\s*(\S+)', profile, re.M).group(1)
+addrs = [a.strip() for a in re.search(r'^Address\s*=\s*(.+)$', profile, re.M).group(1).split(',') if a.strip()]
+pub = re.search(r'^PublicKey\s*=\s*(\S+)', profile, re.M).group(1)
+ep = re.search(r'^Endpoint\s*=\s*(\S+)', profile, re.M).group(1)
+host, port = ep.rsplit(':', 1)
+
+# 拿 reserved (跟部署脚本同逻辑)
+reserved = [0, 0, 0]
+try:
+    with open('wgcf-account.toml') as f:
+        toml = f.read()
+    did = re.search(r'^device_id\s*=\s*"([^"]+)"', toml, re.M).group(1)
+    tok = re.search(r'^access_token\s*=\s*"([^"]+)"', toml, re.M).group(1)
+    out = subprocess.run(['curl','-fsSL','--max-time','10','-H',f'Authorization: Bearer {tok}',
+        f'https://api.cloudflareclient.com/v0i1909051800/reg/{did}'],
+        capture_output=True, text=True, timeout=15).stdout
+    cid = re.search(r'"client_id"\s*:\s*"([^"]+)"', out).group(1)
+    raw = base64.b64decode(cid)
+    if len(raw) >= 3:
+        reserved = list(raw[:3])
+except Exception:
+    pass
+
+# 更新配置中所有 type=wireguard 的 endpoint/outbound
+updated = 0
+for ep_list in ['endpoints', 'outbounds']:
+    for item in cfg.get(ep_list, []):
+        if item.get('type') == 'wireguard' and item.get('tag') == 'warp':
+            item['address'] = addrs
+            item['private_key'] = priv
+            for peer in item.get('peers', []):
+                peer['address'] = host
+                peer['port'] = int(port)
+                peer['public_key'] = pub
+                peer['reserved'] = reserved
+                peer['persistent_keepalive_interval'] = 25
+            updated += 1
+
+if updated == 0:
+    print("未找到 warp 配置", file=sys.stderr)
+    sys.exit(1)
+
+with open(cfg_path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+print(f"已更新 {updated} 个 warp 配置, reserved={reserved}")
+PYEOF
+
+if [ $? -ne 0 ]; then log "配置更新失败"; exit 1; fi
+
+# 5. 校验并重启
+if sing-box check -c "$CFG" >/dev/null 2>&1; then
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl restart sing-box
+  else
+    rc-service sing-box restart
+  fi
+  sleep 8
+  # 复检
+  if curl -fsSL --max-time 15 -x "socks5h://127.0.0.1:10809" \
+      https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | grep -q "warp=on"; then
+    log "WARP 重建成功，已恢复"
+  else
+    log "WARP 重建后仍不通，待下次重试"
+  fi
+else
+  log "新配置校验失败，未重启"
+  exit 1
+fi
