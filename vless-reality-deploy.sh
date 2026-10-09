@@ -460,7 +460,13 @@ if [ "$WARP" = "y" ]; then
       echo "    WARP reserved: ${WARP_RESERVED} (API 获取成功)"
     fi
     WARP_EP="$(awk '/^Endpoint[ \t]*=/{sub(/^[^=]*=[ \t]*/,""); gsub(/[ \t\r]+$/,""); print}' wgcf-profile.conf 2>/dev/null)"
-    WARP_HOST="${WARP_EP%:*}"; WARP_EPPORT="${WARP_EP##*:}"
+    # Endpoint 可能是 [ipv6]:port 或 host:port, 括号要去掉 (sing-box 不认括号)
+    if [[ "$WARP_EP" == \[*\]* ]]; then
+      WARP_HOST="${WARP_EP%%\]*}"; WARP_HOST="${WARP_HOST#\[}"
+      WARP_EPPORT="${WARP_EP##*\]:}"
+    else
+      WARP_HOST="${WARP_EP%:*}"; WARP_EPPORT="${WARP_EP##*:}"
+    fi
     if [ -n "$WARP_PRIV" ] && [ -n "$WARP_ADDRS" ] && [ -n "$WARP_PUB" ]; then
       WARP_ADDR_JSON="$(echo "$WARP_ADDRS" | awk -F',' '{printf "["; n=0; for(i=1;i<=NF;i++){gsub(/^[ \t\r]+|[ \t\r]+$/, "", $i); if($i!=""){if(n>0)printf ","; printf "\"%s\"", $i; n++}}; printf "]"}')"
       # 防御: 地址列表为空则视为解析失败
