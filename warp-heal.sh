@@ -35,72 +35,85 @@ fi
 
 log "WARP 连续 3 次检测失败，开始重建..."
 
-# 3. 重建 WARP 账号
+# 3. 重建 WARP 账号 (直调 Cloudflare API, 无需 wgcf)
 cd "$WARP_DIR" 2>/dev/null || { log "WARP 目录不存在，跳过"; exit 1; }
-ARCH="$(uname -m)"; [ "$ARCH" = "x86_64" ] && ARCH="amd64"; [ "$ARCH" = "aarch64" ] && ARCH="arm64"
-if [ ! -x ./wgcf ]; then
-  WGCF_VER="$(curl -fsSL https://api.github.com/repos/ViRb3/wgcf/releases/latest 2>/dev/null | grep -oP '"tag_name":\s*"\Kv[0-9.]+' | head -1)"
-  [ -n "$WGCF_VER" ] && curl -fsSL -o wgcf "https://github.com/ViRb3/wgcf/releases/download/${WGCF_VER}/wgcf_${WGCF_VER#v}_linux_${ARCH}" 2>/dev/null && chmod +x wgcf
-fi
-if [ ! -x ./wgcf ]; then log "wgcf 不可用，跳过重建"; exit 1; fi
 
-# 删旧账号，重新注册
-rm -f wgcf-account.toml wgcf-profile.conf
-if ! ./wgcf register --accept-tos >/dev/null 2>&1 || ! ./wgcf generate >/dev/null 2>&1; then
-  log "WARP 重新注册失败"
+# 备份旧账号
+cp warp-account.json warp-account.json.bak 2>/dev/null
+
+# 生成 WireGuard 密钥对
+openssl genpkey -algorithm X25519 -out _wgpriv.pem 2>/dev/null
+openssl pkey -in _wgpriv.pem -outform DER 2>/dev/null | tail -c 32 > _wgpriv.raw
+openssl pkey -in _wgpriv.pem -pubout -outform DER 2>/dev/null | tail -c 32 > _wgpub.raw
+_priv_b64="$(base64 -w0 _wgpriv.raw 2>/dev/null)"
+_pub_b64="$(base64 -w0 _wgpub.raw 2>/dev/null)"
+rm -f _wgpriv.pem _wgpriv.raw _wgpub.raw
+_tos="$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")"
+_reg_resp="$(curl -s --max-time 20 -X POST "https://api.cloudflareclient.com/v0a5641/reg" \
+  -H "Content-Type: application/json" \
+  -H "User-Agent: okhttp/3.12.1" \
+  -d "{\"install_id\":\"\",\"tos\":\"${_tos}\",\"key\":\"${_pub_b64}\",\"fcm_token\":\"\",\"type\":\"Android\",\"locale\":\"en_US\"}" 2>&1)"
+python3 - "$_reg_resp" "$_priv_b64" <<'PYEOF' > _warp_parsed.json 2>/dev/null
+import json, sys, base64
+try:
+    d = json.loads(sys.argv[1])
+    dev_id = d.get('id', ''); token = d.get('token', '')
+    cfg = d.get('config', {}); client_id = cfg.get('client_id', '')
+    if not dev_id or not token or not client_id:
+        print(json.dumps({"ok": False})); sys.exit(0)
+    reserved = list(base64.b64decode(client_id))
+    if len(reserved) != 3:
+        print(json.dumps({"ok": False})); sys.exit(0)
+    iface = cfg.get('interface', {}).get('addresses', {})
+    addrs = []
+    if iface.get('v4'): addrs.append(iface['v4'] + '/32')
+    if iface.get('v6'): addrs.append(iface['v6'] + '/128')
+    peers = cfg.get('peers', []); pub = peers[0].get('public_key', '') if peers else ''
+    ep_host = peers[0].get('endpoint', {}).get('host', '') if peers else ''
+    print(json.dumps({"ok": True, "device_id": dev_id, "token": token,
+        "private_key": sys.argv[2], "reserved": reserved, "peer_pub": pub,
+        "endpoint": ep_host, "addresses": addrs}))
+except Exception:
+    print(json.dumps({"ok": False}))
+PYEOF
+_warp_ok="$(python3 -c "import json;print(json.load(open('_warp_parsed.json')).get('ok',False))" 2>/dev/null)"
+if [ "$_warp_ok" != "True" ]; then
+  log "WARP 重新注册失败 (API 异常), 恢复旧账号"
+  [ -f warp-account.json.bak ] && mv warp-account.json.bak warp-account.json
+  rm -f _warp_parsed.json
   exit 1
 fi
+python3 -c "
+import json
+d = json.load(open('_warp_parsed.json'))
+json.dump({k: d[k] for k in ('device_id','token','private_key','reserved','peer_pub','endpoint','addresses')}, open('warp-account.json','w'), indent=2)
+" 2>/dev/null
+rm -f _warp_parsed.json warp-account.json.bak
 log "WARP 账号重新注册成功"
 
 # 4. 用 Python 更新 sing-box 配置中的 wireguard 部分
 python3 - "$CFG" <<'PYEOF'
-import json, sys, re, base64, subprocess
+import json, sys
 
 cfg_path = sys.argv[1]
 with open(cfg_path) as f:
     cfg = json.load(f)
 
-# 从 wgcf-profile.conf 提取新凭证
-with open('wgcf-profile.conf') as f:
-    profile = f.read()
-m_priv = re.search(r'^PrivateKey\s*=\s*(\S+)', profile, re.M)
-m_pub = re.search(r'^PublicKey\s*=\s*(\S+)', profile, re.M)
-m_ep = re.search(r'^Endpoint\s*=\s*(\S+)', profile, re.M)
-if not (m_priv and m_pub and m_ep):
-    print("wgcf-profile.conf 解析失败", file=sys.stderr)
+# 从 warp-account.json 读取新凭证 (直调 API 注册的)
+with open('warp-account.json') as f:
+    acct = json.load(f)
+priv = acct['private_key']
+addrs = acct['addresses']
+pub = acct['peer_pub']
+ep = acct['endpoint']
+reserved = acct['reserved']
+if not (priv and addrs and pub and ep):
+    print("warp-account.json 缺少必要字段", file=sys.stderr)
     sys.exit(1)
-priv = m_priv.group(1)
-addrs = []
-for m in re.finditer(r'^Address\s*=\s*(.+)$', profile, re.M):
-    addrs += [a.strip() for a in m.group(1).split(',') if a.strip()]
-if not addrs:
-    print("Address 为空", file=sys.stderr)
-    sys.exit(1)
-pub = m_pub.group(1)
-ep = m_ep.group(1)
-if ep.startswith('['):
-    host, port = ep.rsplit(']:', 1)
-    host = host[1:]
-else:
+if ':' in ep:
     host, port = ep.rsplit(':', 1)
-
-# 拿 reserved (跟部署脚本同逻辑)
-reserved = [0, 0, 0]
-try:
-    with open('wgcf-account.toml') as f:
-        toml = f.read()
-    did = re.search(r'^device_id\s*=\s*"([^"]+)"', toml, re.M).group(1)
-    tok = re.search(r'^access_token\s*=\s*"([^"]+)"', toml, re.M).group(1)
-    out = subprocess.run(['curl','-fsSL','--max-time','10','-H',f'Authorization: Bearer {tok}',
-        '-H','User-Agent: okhttp/3.12.1','-H','Content-Type: application/json',
-        f'https://api.cloudflareclient.com/v0i1909051800/reg/{did}'],
-        capture_output=True, text=True, timeout=15).stdout
-    cid = re.search(r'"client_id"\s*:\s*"([^"]+)"', out).group(1)
-    raw = base64.b64decode(cid)
-    if len(raw) >= 3:
-        reserved = list(raw[:3])
-except Exception:
-    pass
+else:
+    host, port = ep, '2408'
 
 # 更新配置中所有 type=wireguard 的 endpoint/outbound
 updated = 0
