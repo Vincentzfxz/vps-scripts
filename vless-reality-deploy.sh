@@ -462,7 +462,12 @@ if [ "$WARP" = "y" ]; then
     _wgcf_id=$(grep -oP '^device_id[ \t]*=[ \t]*"\K[^"]+' wgcf-account.toml 2>/dev/null | head -1)
     _wgcf_token=$(grep -oP '^access_token[ \t]*=[ \t]*"\K[^"]+' wgcf-account.toml 2>/dev/null | head -1)
     if [ -n "$_wgcf_id" ] && [ -n "$_wgcf_token" ]; then
-      _client_id=$(curl -fsSL --max-time 10 -H "Authorization: Bearer ${_wgcf_token}" "https://api.cloudflareclient.com/v0i1909051800/reg/${_wgcf_id}" 2>/dev/null | grep -oP '"client_id"[ \t]*:[ \t]*"\K[^"]+' | head -1)
+      # Cloudflare API 必须带 okhttp User-Agent, 否则 403 拿不到 client_id
+      _client_id=$(curl -fsSL --max-time 10 \
+        -H "Authorization: Bearer ${_wgcf_token}" \
+        -H "User-Agent: okhttp/3.12.1" \
+        -H "Content-Type: application/json" \
+        "https://api.cloudflareclient.com/v0i1909051800/reg/${_wgcf_id}" 2>/dev/null | grep -oP '"client_id"[ \t]*:[ \t]*"\K[^"]+' | head -1)
       if [ -n "$_client_id" ]; then
         _reserved=$(echo -n "$_client_id" | base64 -d 2>/dev/null | od -An -tu1 | tr -s ' ' ',' | sed 's/^,//;s/,$//')
         if [ -n "$_reserved" ]; then
