@@ -411,6 +411,20 @@ if [ "$WARP" = "y" ]; then
     # Address 可能多行, 也可能单行逗号分隔 (新版 wgcf); 逐项 trim 并过滤空值, 避免 "" 导致 sing-box panic
     WARP_ADDRS="$(awk '/^Address[ \t]*=/{sub(/^[^=]*=[ \t]*/,""); gsub(/[ \t\r]+$/,""); print}' wgcf-profile.conf 2>/dev/null | paste -sd',' -)"
     WARP_PUB="$(awk '/^PublicKey[ \t]*=/{sub(/^[^=]*=[ \t]*/,""); gsub(/[ \t\r]+$/,""); print}' wgcf-profile.conf 2>/dev/null)"
+    # ---- 获取 WARP reserved 字节 (Cloudflare 按设备路由用, 缺了会握手通但数据不通) ----
+    WARP_RESERVED="[0, 0, 0]"
+    _wgcf_id=$(grep -oP '^device_id[ \t]*=[ \t]*"\K[^"]+' wgcf-account.toml 2>/dev/null | head -1)
+    _wgcf_token=$(grep -oP '^access_token[ \t]*=[ \t]*"\K[^"]+' wgcf-account.toml 2>/dev/null | head -1)
+    if [ -n "$_wgcf_id" ] && [ -n "$_wgcf_token" ]; then
+      _client_id=$(curl -fsSL --max-time 10 -H "Authorization: Bearer ${_wgcf_token}" "https://api.cloudflareclient.com/v0i1909051800/reg/${_wgcf_id}" 2>/dev/null | grep -oP '"client_id"[ \t]*:[ \t]*"\K[^"]+' | head -1)
+      if [ -n "$_client_id" ]; then
+        _reserved=$(echo -n "$_client_id" | base64 -d 2>/dev/null | od -An -tu1 | tr -s ' ' ',' | sed 's/^,//;s/,$//')
+        if [ -n "$_reserved" ]; then
+          WARP_RESERVED="[$_reserved]"
+          echo "    WARP reserved: ${WARP_RESERVED}"
+        fi
+      fi
+    fi
     WARP_EP="$(awk '/^Endpoint[ \t]*=/{sub(/^[^=]*=[ \t]*/,""); gsub(/[ \t\r]+$/,""); print}' wgcf-profile.conf 2>/dev/null)"
     WARP_HOST="${WARP_EP%:*}"; WARP_EPPORT="${WARP_EP##*:}"
     if [ -n "$WARP_PRIV" ] && [ -n "$WARP_ADDRS" ] && [ -n "$WARP_PUB" ]; then
@@ -466,7 +480,9 @@ if [ "$WARP_OK" = "y" ]; then
           \"address\": \"${WARP_HOST}\",
           \"port\": ${WARP_EPPORT},
           \"public_key\": \"${WARP_PUB}\",
-          \"allowed_ips\": [\"0.0.0.0/0\", \"::/0\"]
+          \"allowed_ips\": [\"0.0.0.0/0\", \"::/0\"],
+          \"reserved\": ${WARP_RESERVED},
+          \"persistent_keepalive_interval\": 25
         }
       ]
     }"
