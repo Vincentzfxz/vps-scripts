@@ -151,9 +151,18 @@ change_ports() {
 }
 
 # ---------- 更换 SNI ----------
+# ---------- 更换 SNI ----------
 change_sni() {
   [ -f "$CONFIG" ] || { echo "  未找到配置文件"; return 1; }
-  cur=$(grep -oP '"server":\s*"\K[^"]+' "$CONFIG" | head -1)
+  cur=$(python3 -c "
+import json
+with open('$CONFIG') as f: cfg = json.load(f)
+for ib in cfg.get('inbounds', []):
+    r = ib.get('tls', {}).get('reality', {})
+    if r.get('enabled'):
+        print(r.get('handshake', {}).get('server', ''))
+        break
+" 2>/dev/null)
   echo "  当前 SNI: ${cur:-未知}"
   echo ""
   echo "  1) 自动测速选最快"
@@ -163,7 +172,7 @@ change_sni() {
   if [ "$m" = "1" ]; then
     echo "  测速中..."
     BEST=""; BEST_T="999999"
-    for d in www.microsoft.com www.apple.com addons.mozilla.org swdlp.apple.com www.amazon.com www.samsung.com learn.microsoft.com www.zoom.us www.github.com www.netflix.com; do
+    for d in www.microsoft.com www.apple.com addons.mozilla.org swdlp.apple.com www.amazon.com www.samsung.com learn.microsoft.com www.zoom.us www.github.com www.adobe.com; do
       T="$(curl -o /dev/null -s -m 8 --tlsv1.3 -w "%{time_connect}" "https://$d" 2>/dev/null || echo fail)"
       case "$T" in ''|*[!0-9.]*) T="fail";; esac
       if [ "$T" != "fail" ] && awk "BEGIN{exit !( $T < $BEST_T )}"; then
@@ -183,7 +192,27 @@ change_sni() {
     echo "  已取消"; return 1
   fi
   cp "$CONFIG" "${CONFIG}.bak"
-  sed -i -E "s/\"server\":\s*\"[^\"]+\"/\"server\": \"${new_sni}\"/" "$CONFIG"
+  # 只改 reality handshake 的 server，DNS 一点不动
+  python3 - "$CONFIG" "$new_sni" <<'PYEOF'
+import json, sys
+cfg_path, new_sni = sys.argv[1], sys.argv[2]
+with open(cfg_path) as f:
+    cfg = json.load(f)
+changed = 0
+for ib in cfg.get('inbounds', []):
+    r = ib.get('tls', {}).get('reality', {})
+    if r.get('enabled') and 'handshake' in r:
+        r['handshake']['server'] = new_sni
+        changed += 1
+if changed == 0:
+    print("未找到 reality 配置", file=sys.stderr)
+    sys.exit(1)
+with open(cfg_path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+print(f"已更新 {changed} 个 reality handshake")
+PYEOF
+  [ $? -ne 0 ] && { echo "  更新失败，已恢复备份"; cp "${CONFIG}.bak" "$CONFIG"; return 1; }
+  # 更新链接文件中的 sni 参数
   sed -i -E "s/sni=[^&]+/sni=${new_sni}/g" "$LINK_FILE" 2>/dev/null
   if ! sing-box check -c "$CONFIG" >/dev/null 2>&1; then
     echo "  配置校验失败，已恢复备份"
@@ -194,6 +223,7 @@ change_sni() {
   sleep 2
   echo ""
   echo "  SNI 已更换: ${cur} -> ${new_sni}"
+  echo "  DNS 配置未动，商家解锁不受影响"
   echo "  记得更新客户端的订阅链接"
 }
 
