@@ -426,9 +426,13 @@ if [ "$WARP" = "y" ]; then
         _reserved=$(echo -n "$_client_id" | base64 -d 2>/dev/null | od -An -tu1 | tr -s ' ' ',' | sed 's/^,//;s/,$//')
         if [ -n "$_reserved" ]; then
           WARP_RESERVED="[$_reserved]"
-          echo "    WARP reserved: ${WARP_RESERVED}"
         fi
       fi
+    fi
+    if [ "$WARP_RESERVED" = "[0, 0, 0]" ]; then
+      echo "    WARP reserved: [0, 0, 0] (API 未获取到，用默认值)"
+    else
+      echo "    WARP reserved: ${WARP_RESERVED} (API 获取成功)"
     fi
     WARP_EP="$(awk '/^Endpoint[ \t]*=/{sub(/^[^=]*=[ \t]*/,""); gsub(/[ \t\r]+$/,""); print}' wgcf-profile.conf 2>/dev/null)"
     WARP_HOST="${WARP_EP%:*}"; WARP_EPPORT="${WARP_EP##*:}"
