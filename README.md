@@ -1,6 +1,6 @@
 # 🚀 vps-scripts
 
-VPS 一键部署 **VLESS + Reality** 代理节点。Debian / Ubuntu / Alpine 全系支持，从 128MB 超低配 NAT 小鸡到高配独服，一条命令搞定。
+VPS 一键部署 **VLESS + Reality** 代理节点。Debian / Ubuntu / Alpine 支持，从 128MB 小内存 NAT 小鸡到常规 VPS，一条命令完成基础部署。
 
 ## ✨ 特性
 
@@ -11,8 +11,8 @@ VPS 一键部署 **VLESS + Reality** 代理节点。Debian / Ubuntu / Alpine 全
 | **智能优选伪装站** | 自动测速 10 个候选 SNI，选最快且支持 TLS1.3 的 |
 | **双节点模式** | 直连节点 + WARP 出站节点（Cloudflare 出口），WARP 账号自动注册 |
 | **SOCKS5 代理** | 可选，带账号密码，适合指纹浏览器等场景 |
-| **BBR 加速** | 部署时自动开启 BBR + FQ，高延迟链路提速（不支持时自动跳过） |
-| **ws 管理命令** | 10 项功能：查看节点、更新内核、改端口、换 SNI、改名、扩容 swap、重注册 WARP、实时日志、一键卸载 |
+| **BBR 加速** | ws 菜单第 11 项手动开启，高延迟链路提速 |
+| **ws 管理命令** | 11 项功能：查看节点、更新内核、改端口、换 SNI、改名、扩容 swap、重注册 WARP、开 BBR、实时日志、一键卸载 |
 | **WARP 自愈** | 每 6 小时检测 WARP 连通性，挂了自动重建，直连不受影响 |
 | **小内存优化** | 64MB/128MB 小鸡自动创建 swap，安装不被 OOM 干掉 |
 | **端口占用预检** | 部署前检测端口占用，拒绝玄学启动失败 |
@@ -32,7 +32,7 @@ curl -fsSL https://raw.githubusercontent.com/Vincentzfxz/vps-scripts/main/instal
 
 | 选项 | 说明 |
 |------|------|
-| 直连节点 | 必建，VLESS + Reality，速度最快 |
+| 直连节点 | 必建，VLESS + Reality，直连速度一般比套 CDN 快 |
 | WARP 节点 | 可选，走 Cloudflare 出口，适合解锁流媒体/AI |
 | SOCKS5 | 可选，带账号密码，给指纹浏览器等用 |
 
@@ -52,6 +52,7 @@ curl -fsSL https://raw.githubusercontent.com/Vincentzfxz/vps-scripts/main/instal
 | 8 | 改节点名（只改备注，无需重启） |
 | 9 | 扩容 swap（默认 1024MB） |
 | 10 | 重新注册 WARP（换账号，有机会换出口 IP） |
+| 11 | 开启 BBR 加速 |
 
 ## 🔧 高级用法
 
@@ -120,10 +121,10 @@ A: 先看直连节点是否正常。WARP 依赖 Cloudflare 侧，偶发性不可
 A: 不能。Netflix 按 ASN 封锁 Cloudflare IP 段，WARP 天生被针对。如需解锁请用原生干净 IP 的直连节点。
 
 **Q: 延迟很高怎么办？**
-A: 首先换离你更近的机房（延迟主要看物理距离和路由）。BBR 已自动开启，能优化的是拥塞控制，治不了运营商 QoS 限速。
+A: 首先换离你更近的机房（延迟主要看物理距离和路由）。也可以用 `ws` → 11 手动开启 BBR 加速，能优化的是拥塞控制，治不了运营商 QoS 限速。
 
 **Q: IPv6 链接导入后连不上？**
-A: 脚本默认生成 IPv4 链接。如需 IPv6，请确认本地网络支持 IPv6。
+A: 脚本优先用 IPv4（多数客户端/软路由对 IPv6 支持不完善）；纯 IPv6 的 VPS 会自动用 IPv6 地址生成链接。客户端连不上时先确认本地网络支持 IPv6（手机流量一般支持，家用宽带很多不支持）。
 
 **Q: 卸载后 BBR 还在吗？**
 A: `ws` → 6 完全卸载会自动回滚 BBR 配置，恢复系统默认。
