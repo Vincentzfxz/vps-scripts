@@ -1,5 +1,9 @@
 #!/bin/bash
 # ============================================================
+# vps-scripts by Vincentzfxz
+# https://github.com/Vincentzfxz/vps-scripts
+# MIT License - 欢迎使用、修改、分发，保留作者信息即可
+# ------------------------------------------------------------
 # 一键部署 VLESS + Reality 代理节点 (sing-box)
 # 适用: 任意 KVM/NAT VPS, Debian / Ubuntu / Alpine 系统, root 用户运行
 # 支持: VLESS-Reality 直连节点, 可选再加 WARP 出站节点 / SOCKS5 代理
@@ -275,6 +279,11 @@ ensure_swap() {
   [ -w /proc/sys/vm/drop_caches ] && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
   return 0
 }
+# ---- 品牌横幅 ----
+echo "=================================================="
+echo "  vps-scripts by Vincentzfxz"
+echo "  https://github.com/Vincentzfxz/vps-scripts"
+echo "=================================================="
 ensure_swap
 
 # ---- TCP 优化: 开启 BBR 拥塞控制 (高延迟链路提速; 原创精简版, 只取核心三行) ----
