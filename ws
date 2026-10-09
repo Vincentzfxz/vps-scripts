@@ -391,14 +391,14 @@ re_register_warp() {
     -H "Content-Type: application/json" \
     -H "User-Agent: okhttp/3.12.1" \
     -d "{\"install_id\":\"\",\"tos\":\"${_tos}\",\"key\":\"${_pub_b64}\",\"fcm_token\":\"\",\"type\":\"Android\",\"locale\":\"en_US\"}" \
-    -o _reg_resp.json 2>/dev/null; then
+    -o /tmp/_reg_resp.json 2>/dev/null; then
     echo "  注册失败 (网络错误), 已恢复旧账号"
     [ -f warp-account.json.bak ] && mv warp-account.json.bak warp-account.json
-    rm -f _reg_resp.json
+    rm -f /tmp/_reg_resp.json
     return 1
   fi
-  _reg_resp="$(cat _reg_resp.json 2>/dev/null)"
-  rm -f _reg_resp.json
+  _reg_resp="$(cat /tmp/_reg_resp.json 2>/dev/null)"
+  rm -f /tmp/_reg_resp.json
   python3 - "$_reg_resp" "$_priv_b64" <<'PYEOF' > _warp_parsed.json 2>/dev/null
 import json, sys, base64
 try:
