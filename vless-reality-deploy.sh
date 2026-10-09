@@ -394,98 +394,104 @@ fi
 ROUTE_JSON=""
 ROUTE_RULES=""
 if [ "$WARP" = "y" ]; then
-  echo "==> 配置 WARP 出站..."
+  echo "==> 配置 WARP 出站 (直调 Cloudflare API, 无需 wgcf)..."
   mkdir -p /etc/sing-box/warp && cd /etc/sing-box/warp
-  # 幂等: 已有 wgcf 二进制就复用, 不再每次重新下载
-  if [ ! -x ./wgcf ]; then
-    WGCF_VER="$(curl -fsSL https://api.github.com/repos/ViRb3/wgcf/releases/latest | grep -oP '"tag_name":\s*"\Kv[0-9.]+' | head -1 || true)"
-    if [ -z "$WGCF_VER" ]; then
-      echo "    获取 wgcf 版本失败且本地无 wgcf, 跳过 WARP 节点 (主节点不受影响)"
-    elif curl -fsSL -o wgcf "https://github.com/ViRb3/wgcf/releases/download/${WGCF_VER}/wgcf_${WGCF_VER#v}_linux_${ARCH}" && chmod +x wgcf; then
-      echo "    wgcf 下载成功 (${WGCF_VER})"
-    else
-      echo "    wgcf 下载失败, 跳过 WARP 节点 (主节点不受影响)"
-    fi
+  # 幂等: 已有有效账号就复用, 不重复注册
+  if [ -s warp-account.json ] && grep -q '"device_id"' warp-account.json 2>/dev/null; then
+    echo "    复用已有 WARP 账号"
+    WARP_PRIV="$(python3 -c "import json;print(json.load(open('warp-account.json')).get('private_key',''))" 2>/dev/null)"
+    WARP_RESERVED="$(python3 -c "import json;r=json.load(open('warp-account.json')).get('reserved',[0,0,0]);print('['+', '.join(map(str,r))+']')" 2>/dev/null)"
+    WARP_ADDRS="172.16.0.2/32,2606:4700:110::/48"
   else
-    echo "    复用已有 wgcf"
-  fi
-  if [ -x ./wgcf ]; then
-    # 幂等: 已有有效账号就复用, 不重复注册 (Cloudflare 会限流)
-    if [ -s wgcf-profile.conf ] && grep -q '^PrivateKey' wgcf-profile.conf; then
-      echo "    复用已有 WARP 账号"
-    else
-      if ./wgcf register --accept-tos >/dev/null 2>&1 && ./wgcf generate >/dev/null 2>&1; then
-        # 校验凭证非空 (Cloudflare 限流时会返回空凭证)
-        _check_id=$(grep -oP '^device_id[ \t]*=[ \t]*"\K[^"]+' wgcf-account.toml 2>/dev/null | head -1)
-        if [ -n "$_check_id" ]; then
-          echo "    WARP 账号注册成功"
-        else
-          echo "    WARP 注册返回空凭证 (Cloudflare 限流), 跳过 WARP 节点 (主节点不受影响)"
-          echo "    建议: 等几小时后再试, 频繁注册会被限流"
-          rm -f wgcf-account.toml wgcf-profile.conf
-        fi
-      else
-        echo "    WARP 注册失败 (可能连不上 Cloudflare API), 跳过 WARP 节点 (主节点不受影响)"
-      fi
-    fi
-    WARP_PRIV="$(awk '/^PrivateKey[ \t]*=/{sub(/^[^=]*=[ \t]*/,""); gsub(/[ \t\r]+$/,""); print}' wgcf-profile.conf 2>/dev/null)"
-    # Address 可能多行, 也可能单行逗号分隔 (新版 wgcf); 逐项 trim 并过滤空值, 避免 "" 导致 sing-box panic
-    WARP_ADDRS="$(awk '/^Address[ \t]*=/{sub(/^[^=]*=[ \t]*/,""); gsub(/[ \t\r]+$/,""); print}' wgcf-profile.conf 2>/dev/null | paste -sd',' -)"
-    WARP_PUB="$(awk '/^PublicKey[ \t]*=/{sub(/^[^=]*=[ \t]*/,""); gsub(/[ \t\r]+$/,""); print}' wgcf-profile.conf 2>/dev/null)"
-    # ---- 获取 WARP reserved 字节 (Cloudflare 按设备路由用, 缺了会握手通但数据不通) ----
-    # 兜底用 WireGuard 协议标准默认值 [0,0,0]; 主路径走 API 拿真实 reserved, 失败才用这个
-    WARP_RESERVED="[0, 0, 0]"
-    _wgcf_id=$(grep -oP '^device_id[ \t]*=[ \t]*"\K[^"]+' wgcf-account.toml 2>/dev/null | head -1)
-    _wgcf_token=$(grep -oP '^access_token[ \t]*=[ \t]*"\K[^"]+' wgcf-account.toml 2>/dev/null | head -1)
-    _reserved_dbg=""
-    if [ -z "$_wgcf_id" ]; then
-      _reserved_dbg="device_id 为空"
-    elif [ -z "$_wgcf_token" ]; then
-      _reserved_dbg="access_token 为空"
-    else
-      # Cloudflare API 必须带 okhttp User-Agent, 否则 403 拿不到 client_id
-      _api_resp=$(curl -sL --max-time 10 -w "\nHTTP_CODE:%{http_code}" \
-        -H "Authorization: Bearer ${_wgcf_token}" \
-        -H "User-Agent: okhttp/3.12.1" \
-        -H "Content-Type: application/json" \
-        "https://api.cloudflareclient.com/v0i1909051800/reg/${_wgcf_id}" 2>&1)
-      _http_code=$(echo "$_api_resp" | grep -oP 'HTTP_CODE:\K[0-9]+' | tail -1)
-      _client_id=$(echo "$_api_resp" | grep -oP '"client_id"[ \t]*:[ \t]*"\K[^"]+' | head -1)
-      if [ -n "$_client_id" ]; then
-        _reserved=$(echo -n "$_client_id" | base64 -d 2>/dev/null | od -An -tu1 | tr -s ' ' ',' | sed 's/^,//;s/,$//')
-        if [ -n "$_reserved" ]; then
-          WARP_RESERVED="[$_reserved]"
-        else
-          _reserved_dbg="client_id 解码失败"
-        fi
-      else
-        _reserved_dbg="API 返回 HTTP ${_http_code:-?}, 未含 client_id"
-      fi
-    fi
-    if [ "$WARP_RESERVED" = "[0, 0, 0]" ]; then
-      echo "    WARP reserved: [0, 0, 0] (API 未获取到，用默认值${_reserved_dbg:+, 原因: $_reserved_dbg})"
-    else
+    # 生成 WireGuard 密钥对 (openssl X25519)
+    openssl genpkey -algorithm X25519 -out _wgpriv.pem 2>/dev/null
+    openssl pkey -in _wgpriv.pem -outform DER 2>/dev/null | tail -c 32 > _wgpriv.raw
+    openssl pkey -in _wgpriv.pem -pubout -outform DER 2>/dev/null | tail -c 32 > _wgpub.raw
+    _priv_b64="$(base64 -w0 _wgpriv.raw 2>/dev/null)"
+    _pub_b64="$(base64 -w0 _wgpub.raw 2>/dev/null)"
+    rm -f _wgpriv.pem _wgpriv.raw _wgpub.raw
+    _tos="$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")"
+    echo "    正在注册 WARP 账号..."
+    _reg_resp="$(curl -s --max-time 20 -X POST "https://api.cloudflareclient.com/v0a5641/reg" \
+      -H "Content-Type: application/json" \
+      -H "User-Agent: okhttp/3.12.1" \
+      -d "{\"install_id\":\"\",\"tos\":\"${_tos}\",\"key\":\"${_pub_b64}\",\"fcm_token\":\"\",\"type\":\"Android\",\"locale\":\"en_US\"}" 2>&1)"
+    # 用 python 解析并校验 (比 grep 可靠)
+    python3 - "$_reg_resp" "$_priv_b64" <<'PYEOF' > _warp_parsed.json 2>_warp_err.log
+import json, sys, base64
+try:
+    d = json.loads(sys.argv[1])
+    dev_id = d.get('id', '')
+    token = d.get('token', '')
+    cfg = d.get('config', {})
+    client_id = cfg.get('client_id', '')
+    if not dev_id or not token or not client_id:
+        print(json.dumps({"ok": False, "reason": "API 返回缺字段 (id/token/client_id 为空)"}))
+        sys.exit(0)
+    reserved = list(base64.b64decode(client_id))
+    if len(reserved) != 3:
+        print(json.dumps({"ok": False, "reason": "client_id 解码非 3 字节"}))
+        sys.exit(0)
+    iface = cfg.get('interface', {}).get('addresses', {})
+    addrs = []
+    if iface.get('v4'): addrs.append(iface['v4'] + '/32')
+    if iface.get('v6'): addrs.append(iface['v6'] + '/128')
+    peers = cfg.get('peers', [])
+    pub = peers[0].get('public_key', '') if peers else ''
+    # endpoint 取 host 字段 (engage.cloudflareclient.com:2408)
+    ep_host = ''
+    if peers:
+        ep = peers[0].get('endpoint', {})
+        ep_host = ep.get('host', '')
+    print(json.dumps({
+        "ok": True,
+        "device_id": dev_id,
+        "token": token,
+        "private_key": sys.argv[2],
+        "reserved": reserved,
+        "peer_pub": pub,
+        "endpoint": ep_host,
+        "addresses": addrs,
+        "license": d.get('account', {}).get('license', '')
+    }))
+except Exception as e:
+    print(json.dumps({"ok": False, "reason": "解析失败: %s" % e}))
+PYEOF
+    _warp_ok="$(python3 -c "import json;print(json.load(open('_warp_parsed.json')).get('ok',False))" 2>/dev/null)"
+    if [ "$_warp_ok" = "True" ]; then
+      # 保存账号 (供复用和诊断)
+      python3 -c "
+import json
+d = json.load(open('_warp_parsed.json'))
+json.dump({'device_id': d['device_id'], 'token': d['token'], 'private_key': d['private_key'], 'reserved': d['reserved'], 'license': d.get('license','')}, open('warp-account.json','w'), indent=2)
+" 2>/dev/null
+      WARP_PRIV="$(python3 -c "import json;print(json.load(open('_warp_parsed.json'))['private_key'])" 2>/dev/null)"
+      WARP_RESERVED="$(python3 -c "import json;r=json.load(open('_warp_parsed.json'))['reserved'];print('['+', '.join(map(str,r))+']')" 2>/dev/null)"
+      _addrs="$(python3 -c "import json;print(','.join(json.load(open('_warp_parsed.json'))['addresses']))" 2>/dev/null)"
+      [ -n "$_addrs" ] && WARP_ADDRS="$_addrs"
+      WARP_PUB="$(python3 -c "import json;print(json.load(open('_warp_parsed.json'))['peer_pub'])" 2>/dev/null)"
+      _ep="$(python3 -c "import json;print(json.load(open('_warp_parsed.json'))['endpoint'])" 2>/dev/null)"
+      # endpoint 格式 host:port
+      WARP_HOST="${_ep%:*}"; WARP_EPPORT="${_ep##*:}"
+      echo "    WARP 账号注册成功"
       echo "    WARP reserved: ${WARP_RESERVED} (API 获取成功)"
-    fi
-    WARP_EP="$(awk '/^Endpoint[ \t]*=/{sub(/^[^=]*=[ \t]*/,""); gsub(/[ \t\r]+$/,""); print}' wgcf-profile.conf 2>/dev/null)"
-    # Endpoint 可能是 [ipv6]:port 或 host:port, 括号要去掉 (sing-box 不认括号)
-    if [[ "$WARP_EP" == \[*\]* ]]; then
-      WARP_HOST="${WARP_EP%%\]*}"; WARP_HOST="${WARP_HOST#\[}"
-      WARP_EPPORT="${WARP_EP##*\]:}"
+      rm -f _warp_parsed.json _warp_err.log
     else
-      WARP_HOST="${WARP_EP%:*}"; WARP_EPPORT="${WARP_EP##*:}"
+      _reason="$(python3 -c "import json;print(json.load(open('_warp_parsed.json')).get('reason','未知'))" 2>/dev/null)"
+      echo "    WARP 注册失败 (${_reason}), 跳过 WARP 节点 (主节点不受影响)"
+      rm -f _warp_parsed.json _warp_err.log
     fi
-    if [ -n "$WARP_PRIV" ] && [ -n "$WARP_ADDRS" ] && [ -n "$WARP_PUB" ]; then
-      WARP_ADDR_JSON="$(echo "$WARP_ADDRS" | awk -F',' '{printf "["; n=0; for(i=1;i<=NF;i++){gsub(/^[ \t\r]+|[ \t\r]+$/, "", $i); if($i!=""){if(n>0)printf ","; printf "\"%s\"", $i; n++}}; printf "]"}')"
-      # 防御: 地址列表为空则视为解析失败
-      [ "$WARP_ADDR_JSON" = "[]" ] && WARP_ADDRS=""
+  fi
+  if [ -n "$WARP_PRIV" ] && [ -n "$WARP_ADDRS" ] && [ -n "$WARP_PUB" ]; then
+    WARP_ADDR_JSON="$(echo "$WARP_ADDRS" | awk -F',' '{printf "["; n=0; for(i=1;i<=NF;i++){gsub(/^[ \t\r]+|[ \t\r]+$/, "", $i); if($i!=""){if(n>0)printf ","; printf "\"%s\"", $i; n++}}; printf "]"}')"
+    [ "$WARP_ADDR_JSON" = "[]" ] && WARP_ADDRS=""
     if [ -n "$WARP_ADDRS" ]; then
       [ -z "$WARP_EPPORT" ] && WARP_EPPORT=2408
+      [ -z "$WARP_HOST" ] && WARP_HOST="engage.cloudflareclient.com"
       WARP_OK="y"
       echo "    WARP 出站就绪 (endpoint: ${WARP_HOST}:${WARP_EPPORT})"
     else
       echo "    解析 WARP 配置失败, 跳过 WARP 节点 (主节点不受影响)"
-    fi
     fi
   fi
   cd /tmp
@@ -563,7 +569,7 @@ detect_dns() {
 }
 if [ -z "$DNS_PRIMARY" ]; then
   if DNS_PRIMARY="$(detect_dns)"; then
-    echo "    使用系统 DNS: ${DNS_PRIMARY} (商家 DNS 解锁不受影响)"
+    echo "    使用系统 DNS: ${DNS_PRIMARY} (沿用检测到的系统 DNS)"
   else
     DNS_PRIMARY="1.1.1.1"
     echo "    警告: 未检测到可用系统 DNS, 回退到公共 DNS ${DNS_PRIMARY}"
