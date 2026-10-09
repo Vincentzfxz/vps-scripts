@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================
 # ws - sing-box 节点管理工具
-# 菜单: 查看节点 / 更新 sing-box / 更改端口 / 重启服务 / 日志 / 卸载
+# 菜单: 查看节点 / 更新 sing-box / 更改端口 / 重启服务 / 日志 / 卸载 / 换SNI
 # 由 vless-reality-deploy.sh 自动安装到 /usr/local/bin/ws
 # ============================================================
 CONFIG="/etc/sing-box/config.json"
@@ -150,6 +150,53 @@ change_ports() {
   echo "  端口更改完成, 服务已重启"
 }
 
+# ---------- 更换 SNI ----------
+change_sni() {
+  [ -f "$CONFIG" ] || { echo "  未找到配置文件"; return 1; }
+  cur=$(grep -oP '"server":\s*"\K[^"]+' "$CONFIG" | head -1)
+  echo "  当前 SNI: ${cur:-未知}"
+  echo ""
+  echo "  1) 自动测速选最快"
+  echo "  2) 手动输入域名"
+  read -rp "  请选择 [1/2]: " m
+  new_sni=""
+  if [ "$m" = "1" ]; then
+    echo "  测速中..."
+    BEST=""; BEST_T="999999"
+    for d in www.microsoft.com www.apple.com addons.mozilla.org swdlp.apple.com www.amazon.com www.samsung.com learn.microsoft.com www.zoom.us www.github.com www.netflix.com; do
+      T="$(curl -o /dev/null -s -m 8 --tlsv1.3 -w "%{time_connect}" "https://$d" 2>/dev/null || echo fail)"
+      case "$T" in ''|*[!0-9.]*) T="fail";; esac
+      if [ "$T" != "fail" ] && awk "BEGIN{exit !( $T < $BEST_T )}"; then
+        BEST="$d"; BEST_T="$T"
+      fi
+    done
+    if [ -n "$BEST" ]; then
+      echo "  最快: ${BEST} ${BEST_T}s"
+      new_sni="$BEST"
+    else
+      echo "  都不可达，取消"; return 1
+    fi
+  elif [ "$m" = "2" ]; then
+    read -rp "  输入新域名: " new_sni
+    [ -z "$new_sni" ] && { echo "  已取消"; return 1; }
+  else
+    echo "  已取消"; return 1
+  fi
+  cp "$CONFIG" "${CONFIG}.bak"
+  sed -i -E "s/\"server\":\s*\"[^\"]+\"/\"server\": \"${new_sni}\"/" "$CONFIG"
+  sed -i -E "s/sni=[^&]+/sni=${new_sni}/g" "$LINK_FILE" 2>/dev/null
+  if ! sing-box check -c "$CONFIG" >/dev/null 2>&1; then
+    echo "  配置校验失败，已恢复备份"
+    cp "${CONFIG}.bak" "$CONFIG"
+    return 1
+  fi
+  svc restart
+  sleep 2
+  echo ""
+  echo "  SNI 已更换: ${cur} -> ${new_sni}"
+  echo "  记得更新客户端的订阅链接"
+}
+
 # ---------- 4. 重启服务 ----------
 restart_svc() {
   svc restart
@@ -175,7 +222,7 @@ show_log() {
 uninstall() {
   echo ""
   echo "  ⚠️  将删除: sing-box 二进制、配置文件、系统服务、"
-  echo "     防火墙规则、节点信息。swapfile 会保留 (有用且无害)。"
+  echo "     防火墙规则、节点信息、WARP 自愈任务。swapfile 会保留 (有用且无害)。"
   read -rp "  输入 YES 确认完全卸载: " c
   [ "$c" = "YES" ] || { echo "  已取消"; return 0; }
   echo "  停止服务..."
@@ -202,6 +249,9 @@ uninstall() {
   firewall-cmd --reload >/dev/null 2>&1
   echo "  删除文件..."
   rm -f /usr/local/bin/sing-box
+  rm -f /usr/local/bin/warp-heal
+  rm -f /var/log/warp-heal.log
+  (crontab -l 2>/dev/null | grep -v "warp-heal") | crontab - 2>/dev/null
   rm -rf /etc/sing-box
   rm -f "$LINK_FILE" "$SOCKS_FILE" "${CONFIG}.bak"
   echo ""
@@ -221,10 +271,10 @@ while true; do
   echo "  4. 重启服务"
   echo "  5. 查看实时日志"
   echo "  6. 完全卸载"
-  echo "  7. 刷 WARP 出口 IP (解锁 Netflix)"
+  echo "  7. 更换 SNI"
   echo "  0. 退出"
   echo "========================================"
-  read -rp "  请选择 [0-6]: " choice
+  read -rp "  请选择 [0-7]: " choice
   case "$choice" in
     1) show_nodes ;;
     2) update_singbox ;;
@@ -232,6 +282,7 @@ while true; do
     4) restart_svc ;;
     5) show_log ;;
     6) uninstall ;;
+    7) change_sni ;;
 
     0) exit 0 ;;
     *) echo "  无效选择" ;;
