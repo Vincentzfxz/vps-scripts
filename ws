@@ -197,6 +197,28 @@ change_sni() {
   echo "  记得更新客户端的订阅链接"
 }
 
+# ---------- 改节点名 ----------
+rename_node() {
+  [ -f "$LINK_FILE" ] || { echo "  未找到节点文件"; return 1; }
+  echo "  当前节点:"
+  grep -n "^vless://" "$LINK_FILE" | while IFS=: read -r ln line; do
+    name=$(echo "$line" | grep -oP '#\K.*$' | python3 -c "import sys,urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))" 2>/dev/null || echo "$line" | grep -oP '#\K.*$')
+    echo "  $ln. $name"
+  done
+  echo ""
+  read -rp "  选要改名的序号 (回车取消): " num
+  [ -z "$num" ] && return 0
+  line=$(sed -n "${num}p" "$LINK_FILE" 2>/dev/null)
+  echo "$line" | grep -q "^vless://" || { echo "  序号无效"; return 1; }
+  oldname=$(echo "$line" | grep -oP '#\K.*$')
+  read -rp "  新名字 (支持中文): " newname
+  [ -z "$newname" ] && { echo "  已取消"; return 1; }
+  enc=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$newname" 2>/dev/null || echo "$newname")
+  newline=$(echo "$line" | sed "s/#.*/\\#$enc/")
+  sed -i "${num}s|.*|${newline}|" "$LINK_FILE"
+  echo "  已改名，不用重启，重新导入链接即可"
+}
+
 # ---------- 4. 重启服务 ----------
 restart_svc() {
   svc restart
@@ -272,9 +294,10 @@ while true; do
   echo "  5. 查看实时日志"
   echo "  6. 完全卸载"
   echo "  7. 更换 SNI"
+  echo "  8. 改节点名"
   echo "  0. 退出"
   echo "========================================"
-  read -rp "  请选择 [0-7]: " choice
+  read -rp "  请选择 [0-8]: " choice
   case "$choice" in
     1) show_nodes ;;
     2) update_singbox ;;
@@ -283,6 +306,7 @@ while true; do
     5) show_log ;;
     6) uninstall ;;
     7) change_sni ;;
+    8) rename_node ;;
 
     0) exit 0 ;;
     *) echo "  无效选择" ;;
