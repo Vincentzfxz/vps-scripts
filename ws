@@ -375,89 +375,83 @@ re_register_warp() {
   [[ "$c" =~ ^[Yy]$ ]] || { echo "  已取消"; return 0; }
   [ -d "$WARP_DIR" ] || { echo "  WARP 目录不存在"; return 1; }
   cd "$WARP_DIR" || return 1
-  ARCH="$(uname -m)"; [ "$ARCH" = "x86_64" ] && ARCH="amd64"; [ "$ARCH" = "aarch64" ] && ARCH="arm64"
-  if [ ! -x ./wgcf ]; then
-    WGCF_VER="$(curl -fsSL https://api.github.com/repos/ViRb3/wgcf/releases/latest 2>/dev/null | grep -oP '"tag_name":\s*"\Kv[0-9.]+' | head -1)"
-    [ -n "$WGCF_VER" ] && curl -fsSL -o wgcf "https://github.com/ViRb3/wgcf/releases/download/${WGCF_VER}/wgcf_${WGCF_VER#v}_linux_${ARCH}" 2>/dev/null && chmod +x wgcf
-  fi
-  [ -x ./wgcf ] || { echo "  wgcf 不可用"; return 1; }
   # 备份配置和旧账号 (注册失败可恢复)
   cp "$CFG" "${CFG}.bak.$(date +%Y%m%d%H%M%S)"
-  cp wgcf-account.toml wgcf-account.toml.bak 2>/dev/null
-  cp wgcf-profile.conf wgcf-profile.conf.bak 2>/dev/null
-  echo "  正在重新注册..."
-  rm -f wgcf-account.toml wgcf-profile.conf
-  if ! ./wgcf register --accept-tos >/dev/null 2>&1 || ! ./wgcf generate >/dev/null 2>&1; then
-    echo "  注册失败 (Cloudflare API 可能限流, 稍后再试)"
-    [ -f wgcf-account.toml.bak ] && mv wgcf-account.toml.bak wgcf-account.toml
-    [ -f wgcf-profile.conf.bak ] && mv wgcf-profile.conf.bak wgcf-profile.conf
+  cp warp-account.json warp-account.json.bak 2>/dev/null
+  echo "  正在重新注册 (直调 Cloudflare API)..."
+  # 生成 WireGuard 密钥对
+  openssl genpkey -algorithm X25519 -out _wgpriv.pem 2>/dev/null
+  openssl pkey -in _wgpriv.pem -outform DER 2>/dev/null | tail -c 32 > _wgpriv.raw
+  openssl pkey -in _wgpriv.pem -pubout -outform DER 2>/dev/null | tail -c 32 > _wgpub.raw
+  _priv_b64="$(base64 -w0 _wgpriv.raw 2>/dev/null)"
+  _pub_b64="$(base64 -w0 _wgpub.raw 2>/dev/null)"
+  rm -f _wgpriv.pem _wgpriv.raw _wgpub.raw
+  _tos="$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")"
+  _reg_resp="$(curl -s --max-time 20 -X POST "https://api.cloudflareclient.com/v0a5641/reg" \
+    -H "Content-Type: application/json" \
+    -H "User-Agent: okhttp/3.12.1" \
+    -d "{\"install_id\":\"\",\"tos\":\"${_tos}\",\"key\":\"${_pub_b64}\",\"fcm_token\":\"\",\"type\":\"Android\",\"locale\":\"en_US\"}" 2>&1)"
+  python3 - "$_reg_resp" "$_priv_b64" <<'PYEOF' > _warp_parsed.json 2>/dev/null
+import json, sys, base64
+try:
+    d = json.loads(sys.argv[1])
+    dev_id = d.get('id', ''); token = d.get('token', '')
+    cfg = d.get('config', {}); client_id = cfg.get('client_id', '')
+    if not dev_id or not token or not client_id:
+        print(json.dumps({"ok": False, "reason": "API 返回缺字段"})); sys.exit(0)
+    reserved = list(base64.b64decode(client_id))
+    if len(reserved) != 3:
+        print(json.dumps({"ok": False, "reason": "client_id 非 3 字节"})); sys.exit(0)
+    iface = cfg.get('interface', {}).get('addresses', {})
+    addrs = []
+    if iface.get('v4'): addrs.append(iface['v4'] + '/32')
+    if iface.get('v6'): addrs.append(iface['v6'] + '/128')
+    peers = cfg.get('peers', []); pub = peers[0].get('public_key', '') if peers else ''
+    ep_host = peers[0].get('endpoint', {}).get('host', '') if peers else ''
+    print(json.dumps({"ok": True, "device_id": dev_id, "token": token,
+        "private_key": sys.argv[2], "reserved": reserved, "peer_pub": pub,
+        "endpoint": ep_host, "addresses": addrs}))
+except Exception as e:
+    print(json.dumps({"ok": False, "reason": str(e)}))
+PYEOF
+  _warp_ok="$(python3 -c "import json;print(json.load(open('_warp_parsed.json')).get('ok',False))" 2>/dev/null)"
+  if [ "$_warp_ok" != "True" ]; then
+    _reason="$(python3 -c "import json;print(json.load(open('_warp_parsed.json')).get('reason','未知'))" 2>/dev/null)"
+    echo "  注册失败 (${_reason}), 已恢复旧账号"
+    [ -f warp-account.json.bak ] && mv warp-account.json.bak warp-account.json
+    rm -f _warp_parsed.json
     return 1
   fi
-  # 校验新凭证非空 (Cloudflare 限流时会返回空凭证)
-  _new_id=$(grep -oP '^device_id[ \t]*=[ \t]*"\K[^"]+' wgcf-account.toml 2>/dev/null | head -1)
-  if [ -z "$_new_id" ]; then
-    echo "  警告: 新账号凭证为空 (Cloudflare 限流), 已恢复旧账号"
-    [ -f wgcf-account.toml.bak ] && mv wgcf-account.toml.bak wgcf-account.toml
-    [ -f wgcf-profile.conf.bak ] && mv wgcf-profile.conf.bak wgcf-profile.conf
-    echo "  建议: 等几小时后再试, 频繁注册会被限流"
-    return 1
-  fi
-  rm -f wgcf-account.toml.bak wgcf-profile.conf.bak
-  echo "  新账号注册成功, 更新配置..."
+  # 保存新账号 (全部字段, 供配置更新和复用)
+  python3 -c "
+import json
+d = json.load(open('_warp_parsed.json'))
+json.dump({k: d[k] for k in ('device_id','token','private_key','reserved','peer_pub','endpoint','addresses')}, open('warp-account.json','w'), indent=2)
+" 2>/dev/null
+  rm -f _warp_parsed.json warp-account.json.bak
+  echo "  新账号注册成功 (reserved: $(python3 -c "import json;r=json.load(open('warp-account.json'))['reserved'];print(r)" 2>/dev/null)), 更新配置..."
   python3 - "$CFG" <<'PYEOF'
-import json, sys, re, base64, subprocess
+import json, sys
 cfg_path = sys.argv[1]
 try:
     with open(cfg_path) as f: cfg = json.load(f)
-    with open('wgcf-profile.conf') as f: profile = f.read()
-    m_priv = re.search(r'^PrivateKey\s*=\s*(\S+)', profile, re.M)
-    m_addr = re.search(r'^Address\s*=\s*(.+)$', profile, re.M)
-    m_pub = re.search(r'^PublicKey\s*=\s*(\S+)', profile, re.M)
-    m_ep = re.search(r'^Endpoint\s*=\s*(\S+)', profile, re.M)
-    if not (m_priv and m_addr and m_pub and m_ep):
-        print("wgcf-profile.conf 解析失败: 缺少必要字段", file=sys.stderr)
+    with open('warp-account.json') as f: acct = json.load(f)
+    priv = acct['private_key']
+    addrs = acct['addresses']
+    pub = acct['peer_pub']
+    ep = acct['endpoint']
+    reserved = acct['reserved']
+    if not (priv and addrs and pub and ep):
+        print("warp-account.json 缺少必要字段", file=sys.stderr)
         sys.exit(1)
-    priv = m_priv.group(1)
-    # Address 可能多行或单行逗号分隔, 全部收集
-    addrs = []
-    for m in re.finditer(r'^Address\s*=\s*(.+)$', profile, re.M):
-        addrs += [a.strip() for a in m.group(1).split(',') if a.strip()]
-    if not addrs:
-        print("wgcf-profile.conf 解析失败: Address 为空", file=sys.stderr)
-        sys.exit(1)
-    pub = m_pub.group(1)
-    ep = m_ep.group(1)
-    # Endpoint 可能是 [ipv6]:port 或 host:port
-    if ep.startswith('['):
-        host, port = ep.rsplit(']:', 1)
-        host = host[1:]
-    else:
+    # endpoint 格式 host:port
+    if ':' in ep:
         host, port = ep.rsplit(':', 1)
-except Exception as e:
-    print(f"配置文件解析失败: {e}", file=sys.stderr)
-    sys.exit(1)
-reserved = [0, 0, 0]
-dbg = ""
-try:
-    with open('wgcf-account.toml') as f: toml = f.read()
-    did = re.search(r'^device_id\s*=\s*"([^"]+)"', toml, re.M).group(1)
-    tok = re.search(r'^access_token\s*=\s*"([^"]+)"', toml, re.M).group(1)
-    out = subprocess.run(['curl','-sL','--max-time','10','-w','\nHTTP_CODE:%{http_code}',
-        '-H',f'Authorization: Bearer {tok}',
-        '-H','User-Agent: okhttp/3.12.1','-H','Content-Type: application/json',
-        f'https://api.cloudflareclient.com/v0i1909051800/reg/{did}'],
-        capture_output=True, text=True, timeout=15).stdout
-    m = re.search(r'HTTP_CODE:(\d+)', out)
-    code = m.group(1) if m else "?"
-    cid_m = re.search(r'"client_id"\s*:\s*"([^"]+)"', out)
-    if cid_m:
-        raw = base64.b64decode(cid_m.group(1))
-        if len(raw) >= 3: reserved = list(raw[:3])
-        else: dbg = "client_id 解码失败"
     else:
-        dbg = f"API 返回 HTTP {code}, 未含 client_id"
+        host, port = ep, '2408'
 except Exception as e:
-    dbg = f"异常: {e}"
+    print(f"账号文件解析失败: {e}", file=sys.stderr)
+    sys.exit(1)
 updated = 0
 for ep_list in ['endpoints', 'outbounds']:
     for item in cfg.get(ep_list, []):
@@ -470,7 +464,7 @@ for ep_list in ['endpoints', 'outbounds']:
             updated += 1
 if updated == 0: print("未找到 warp 配置", file=sys.stderr); sys.exit(1)
 with open(cfg_path, 'w') as f: json.dump(cfg, f, indent=2)
-print(f"已更新 {updated} 个 warp 配置, reserved={reserved}" + (f", 原因: {dbg}" if dbg and reserved == [0,0,0] else "") + ")")
+print(f"已更新 {updated} 个 warp 配置, reserved={reserved})")
 PYEOF
   [ $? -ne 0 ] && { echo "  配置更新失败, 已备份原配置"; return 1; }
   if ! sing-box check -c "$CFG" >/dev/null 2>&1; then
@@ -506,7 +500,16 @@ enable_bbr() {
     return 0
   fi
   if ! echo "$_avail" | grep -qw bbr; then
-    echo "  当前内核未编译 BBR 模块 (如 deb13-cloud 精简内核), 无法开启"
+    # 可用列表里没有 BBR, 可能是模块未加载, 先尝试加载
+    echo "  可用列表中无 BBR, 尝试加载 tcp_bbr 模块..."
+    if modprobe tcp_bbr 2>/dev/null; then
+      sleep 1
+      _avail=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null)
+      echo "  重新检测可用算法: ${_avail:-未知}"
+    fi
+  fi
+  if ! echo "$_avail" | grep -qw bbr; then
+    echo "  当前内核未提供 BBR (模块加载失败或未编译), 无法开启"
     echo "  如需 BBR 请更换完整版内核"
     return 1
   fi
