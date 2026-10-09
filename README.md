@@ -89,6 +89,21 @@ curl -fsSL https://raw.githubusercontent.com/Vincentzfxz/vps-scripts/main/instal
 | `ws` | 节点管理命令（部署时自动安装） |
 | `warp-heal.sh` | WARP 自愈脚本（部署 WARP 时自动安装） |
 
+## 📱 客户端推荐
+
+本节点为 VLESS + Reality 协议，请使用支持 Reality 的客户端：
+
+| 平台 | 推荐客户端 | 说明 |
+|------|-----------|------|
+| Windows | v2rayN / Nekoray / Clash Verge Rev | v2rayN 必须切换到 **Xray_core** 内核 |
+| macOS | Clash Verge Rev / Nekoray |  |
+| Android | v2rayNG / NekoBox | v2rayNG 用 Xray 内核，NekoBox 用 sing-box 内核 |
+| iOS | Shadowrocket / Stash |  |
+| OpenWrt 软路由 | OpenClash / PassWall | OpenClash 用 mihomo 内核 |
+| Linux | Nekoray / Clash Verge Rev |  |
+
+⚠️ **v2rayN 用户注意**：默认 sing-box 内核连接 Reality 有已知 bug，请在 v2rayN 设置里切换到 **Xray_core**，否则可能握手失败。
+
 ## ⚠️ 注意事项
 
 - 需要 **root** 权限运行
